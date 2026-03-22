@@ -1,0 +1,22 @@
+# Operator pricing configuration for voice inference blueprint
+#
+# This file is read by the BPM pricing engine to generate RFQ quotes.
+# Operators customize per-model pricing based on their hardware costs.
+
+# Default resource pricing for service quotes
+[default]
+resources = [
+  { kind = "GPU", count = 1, price_per_unit_rate = 0.005 },
+  { kind = "CPU", count = 4, price_per_unit_rate = 0.001 },
+  { kind = "MemoryMB", count = 16384, price_per_unit_rate = 0.00005 },
+  { kind = "NetworkEgressMB", count = 2048, price_per_unit_rate = 0.00003 },
+]
+
+# Per-job pricing (job_index = price_in_wei)
+# Job 0 = TTS_JOB (text-to-speech synthesis)
+#
+# Per-character pricing is handled by billing.rs:
+#   cost = (characters * price_per_1k_characters) / 1000
+# This job price is the minimum/base fee per request.
+[0]
+0 = "500000000000000"     # Job 0 (TTS): 0.0005 ETH base fee per request
