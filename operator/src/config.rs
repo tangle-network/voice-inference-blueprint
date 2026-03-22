@@ -190,9 +190,8 @@ pub struct BillingConfig {
     pub max_gas_price_gwei: u64,
 
     /// Path to persist used nonces across restarts (replay protection).
-    /// Without this, nonces are in-memory only and lost on restart,
-    /// allowing replay of unexpired SpendAuth signatures.
-    #[serde(default)]
+    /// Defaults to `data/nonces.json` in the working directory.
+    #[serde(default = "default_nonce_store_path")]
     pub nonce_store_path: Option<PathBuf>,
 
     /// ERC-20 token address for x402 payment (e.g. tsUSD).
@@ -285,6 +284,10 @@ fn default_clock_skew_tolerance() -> u64 {
 
 fn default_supported_formats() -> Vec<String> {
     vec!["mp3".to_string(), "wav".to_string(), "ogg".to_string()]
+}
+
+fn default_nonce_store_path() -> Option<PathBuf> {
+    Some(PathBuf::from("data/nonces.json"))
 }
 
 impl OperatorConfig {
