@@ -187,6 +187,47 @@ cast send "$RLN_ADDR" \
     --json > /dev/null 2>&1
 echo "  Operator registered"
 
+# ── [3b/6] Deploy InferenceBSM ────────────────────────────────────────
+
+echo "[3b/6] Deploying InferenceBSM..."
+
+FORGE_OUT=$(forge create "$CONTRACTS_DIR/src/InferenceBSM.sol:InferenceBSM" \
+    --rpc-url "$RPC_URL" \
+    --private-key "$DEPLOYER_KEY" \
+    --root "$CONTRACTS_DIR" \
+    --broadcast \
+    --constructor-args "$TOKEN_ADDR" 2>&1)
+BSM_ADDR=$(parse_deployed "$FORGE_OUT")
+
+if [ -z "$BSM_ADDR" ]; then
+    echo "ERROR: InferenceBSM deployment failed"
+    echo "$FORGE_OUT" | tail -20
+    exit 1
+fi
+echo "  InferenceBSM: $BSM_ADDR"
+
+# Initialize: deployer acts as tangleCore for local testing
+cast send "$BSM_ADDR" \
+    "onBlueprintCreated(uint64,address,address)" 1 "$DEPLOYER_ADDR" "$DEPLOYER_ADDR" \
+    --private-key "$DEPLOYER_KEY" --rpc-url "$RPC_URL" --json > /dev/null 2>&1
+echo "  Initialized (blueprintId=1, tangleCore=deployer)"
+
+# Configure model
+cast send "$BSM_ADDR" \
+    "configureModel(string,uint32,uint64,uint64,uint32)" \
+    "Qwen/Qwen3-TTS-1.7B" 8192 10 15 16000 \
+    --private-key "$DEPLOYER_KEY" --rpc-url "$RPC_URL" --json > /dev/null 2>&1
+echo "  Configured model: Qwen/Qwen3-TTS-1.7B (minVram=16000)"
+
+# Register operator via BSM
+REG_DATA=$(cast abi-encode \
+    "f(string,uint32,uint32,string,string)" \
+    "Qwen/Qwen3-TTS-1.7B" 1 24000 "NVIDIA A10G" "http://127.0.0.1:$OPERATOR_PORT")
+cast send "$BSM_ADDR" \
+    "onRegister(address,bytes)" "$OPERATOR_ADDR" "$REG_DATA" \
+    --private-key "$DEPLOYER_KEY" --rpc-url "$RPC_URL" --json > /dev/null 2>&1
+echo "  Registered operator on BSM"
+
 # ── [4/6] Mint tokens + approve contracts ──────────────────────────────
 
 echo "[4/6] Minting tokens and setting approvals..."
@@ -257,6 +298,7 @@ CHAIN_ID=31337
 TOKEN_ADDR=$TOKEN_ADDR
 SHIELDED_CREDITS=$CREDITS_ADDR
 RLN_SETTLEMENT=$RLN_ADDR
+BSM_ADDR=$BSM_ADDR
 
 # Accounts
 DEPLOYER_KEY=$DEPLOYER_KEY
@@ -285,6 +327,7 @@ echo "Contracts:"
 echo "  tsUSD Token:       $TOKEN_ADDR"
 echo "  ShieldedCredits:   $CREDITS_ADDR"
 echo "  RLNSettlement:     $RLN_ADDR"
+echo "  InferenceBSM:      $BSM_ADDR"
 echo ""
 echo "Accounts:"
 echo "  Deployer: $DEPLOYER_ADDR"
