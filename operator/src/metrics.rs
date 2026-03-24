@@ -11,10 +11,10 @@ static REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::default);
 
 pub static REQUEST_COUNT: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let opts = Opts::new(
-        "vllm_operator_request_count",
+        "tangle_operator_request_count",
         "Total inference requests handled",
     )
-    .namespace("vllm_operator");
+    .namespace("tangle_operator");
     let counter =
         IntCounterVec::new(opts, &["status"]).expect("REQUEST_COUNT metric definition is valid");
     REGISTRY
@@ -25,10 +25,10 @@ pub static REQUEST_COUNT: LazyLock<IntCounterVec> = LazyLock::new(|| {
 
 pub static REQUEST_DURATION: LazyLock<HistogramVec> = LazyLock::new(|| {
     let opts = HistogramOpts::new(
-        "vllm_operator_request_duration_seconds",
+        "tangle_operator_request_duration_seconds",
         "Request duration in seconds",
     )
-    .namespace("vllm_operator")
+    .namespace("tangle_operator")
     .buckets(vec![
         0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0,
     ]);
@@ -41,8 +41,8 @@ pub static REQUEST_DURATION: LazyLock<HistogramVec> = LazyLock::new(|| {
 });
 
 pub static TOKENS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
-    let opts = Opts::new("vllm_operator_tokens_total", "Total tokens processed")
-        .namespace("vllm_operator");
+    let opts = Opts::new("tangle_operator_tokens_total", "Total tokens processed")
+        .namespace("tangle_operator");
     let counter =
         IntCounterVec::new(opts, &["type"]).expect("TOKENS_TOTAL metric definition is valid");
     REGISTRY
@@ -53,7 +53,7 @@ pub static TOKENS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
 
 pub static ACTIVE_REQUESTS: LazyLock<Gauge> = LazyLock::new(|| {
     let gauge = Gauge::new(
-        "vllm_operator_active_requests",
+        "tangle_operator_active_requests",
         "Number of currently active inference requests",
     )
     .expect("ACTIVE_REQUESTS metric definition is valid");
