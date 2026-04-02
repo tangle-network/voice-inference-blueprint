@@ -585,7 +585,7 @@ fi
 if [ "$API_RUNNING" = "true" ]; then
     # 7a. x402 flow: request without payment returns 402
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        -X POST "$API_URL/v1/chat/completions" \
+        -X POST "$API_URL/v1/audio/speech" \
         -H "Content-Type: application/json" \
         -d '{"messages":[{"role":"user","content":"say hello"}],"max_tokens":10}' 2>/dev/null)
     assert_eq "$HTTP_CODE" "402" "request without payment returns HTTP 402"
@@ -603,7 +603,7 @@ if [ "$API_RUNNING" = "true" ]; then
     API_SIG=$(echo "$API_SIGN" | jq -r '.signature')
 
     CHAT_RESP=$(curl -s -w "\n%{http_code}" \
-        -X POST "$API_URL/v1/chat/completions" \
+        -X POST "$API_URL/v1/audio/speech" \
         -H "Content-Type: application/json" \
         -d "{
             \"messages\":[{\"role\":\"user\",\"content\":\"Say hello in one word.\"}],

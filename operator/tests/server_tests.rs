@@ -8,8 +8,8 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-use vllm_inference::config::{
-    BillingConfig, GpuConfig, OperatorConfig, ServerConfig, TangleConfig, VllmConfig,
+use voice_inference::config::{
+    BillingConfig, GpuConfig, OperatorConfig, ServerConfig, TangleConfig, VoiceModelConfig,
 };
 
 fn test_config(vllm_port: u16) -> OperatorConfig {
@@ -23,7 +23,7 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             blueprint_id: 1,
             service_id: Some(1),
         },
-        vllm: VllmConfig {
+        vllm: VoiceModelConfig {
             model: "test-model".into(),
             max_model_len: 4096,
             host: "127.0.0.1".into(),
@@ -34,20 +34,19 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             hf_token: None,
             download_dir: None,
             startup_timeout_secs: 10,
+            default_voice: None,
+            supported_formats: vec!["mp3".into(), "wav".into(), "ogg".into()],
         },
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
             max_concurrent_requests: 2,
             max_request_body_bytes: 2 * 1024 * 1024,
-            stream_timeout_secs: 300,
-            idle_chunk_timeout_secs: 30,
-            max_line_buf_bytes: 1024 * 1024,
+            request_timeout_secs: 300,
             max_per_account_requests: 0,
         },
         billing: BillingConfig {
-            price_per_input_token: 1,
-            price_per_output_token: 2,
+            price_per_1k_characters: 10,
             max_spend_per_request: 1_000_000,
             min_credit_balance: 1000,
             billing_required: false, // Disabled in tests to avoid needing real spend_auth
@@ -56,25 +55,28 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             clock_skew_tolerance_secs: 30,
             max_gas_price_gwei: 0,
             nonce_store_path: None,
+            required: false,
+            payment_token_address: None,
         },
         gpu: GpuConfig {
             expected_gpu_count: 0,
             min_vram_mib: 0,
             monitor_interval_secs: 30,
         },
+        rln: None,
     }
 }
 
-// ─── Metrics Tests ───────────────────────────────────────────────────────
+// --- Metrics Tests ---
 
 #[tokio::test]
 async fn test_metrics_gather_produces_valid_output() {
-    let mut guard = vllm_inference::metrics::RequestGuard::new();
+    let mut guard = voice_inference::metrics::RequestGuard::new();
     guard.set_tokens(1, 1);
     guard.set_success();
     drop(guard);
 
-    let output = vllm_inference::metrics::gather();
+    let output = voice_inference::metrics::gather();
     assert!(
         output.contains("vllm_operator_active_requests"),
         "missing active_requests metric"
@@ -95,7 +97,7 @@ async fn test_metrics_gather_produces_valid_output() {
 
 #[tokio::test]
 async fn test_request_guard_tracks_active_requests() {
-    use vllm_inference::metrics::{RequestGuard, ACTIVE_REQUESTS};
+    use voice_inference::metrics::{RequestGuard, ACTIVE_REQUESTS};
 
     let initial = ACTIVE_REQUESTS.get();
 
@@ -111,7 +113,7 @@ async fn test_request_guard_tracks_active_requests() {
 
 #[tokio::test]
 async fn test_request_guard_records_tokens_on_drop() {
-    use vllm_inference::metrics::{RequestGuard, TOKENS_TOTAL};
+    use voice_inference::metrics::{RequestGuard, TOKENS_TOTAL};
 
     let prompt_before = TOKENS_TOTAL.with_label_values(&["prompt"]).get();
     let completion_before = TOKENS_TOTAL.with_label_values(&["completion"]).get();
@@ -133,7 +135,7 @@ async fn test_request_guard_records_tokens_on_drop() {
 
 #[tokio::test]
 async fn test_request_guard_defaults_to_error() {
-    use vllm_inference::metrics::{RequestGuard, REQUEST_COUNT};
+    use voice_inference::metrics::{RequestGuard, REQUEST_COUNT};
 
     let error_before = REQUEST_COUNT.with_label_values(&["error"]).get();
 
@@ -148,7 +150,7 @@ async fn test_request_guard_defaults_to_error() {
 
 #[tokio::test]
 async fn test_request_guard_records_success() {
-    use vllm_inference::metrics::{RequestGuard, REQUEST_COUNT};
+    use voice_inference::metrics::{RequestGuard, REQUEST_COUNT};
 
     let success_before = REQUEST_COUNT.with_label_values(&["success"]).get();
 
@@ -162,7 +164,7 @@ async fn test_request_guard_records_success() {
     );
 }
 
-// ─── Semaphore Tests ─────────────────────────────────────────────────────
+// --- Semaphore Tests ---
 
 #[tokio::test]
 async fn test_semaphore_limits_concurrency() {
@@ -195,150 +197,22 @@ async fn test_semaphore_zero_config_means_unlimited() {
     assert_eq!(permits.len(), 1000);
 }
 
-// ─── Billing Order Tests ─────────────────────────────────────────────────
+// --- Billing Tests ---
 
 #[tokio::test]
 async fn test_billing_calculate_cost() {
     let config = Arc::new(test_config(8000));
-    let billing = vllm_inference::billing::BillingClient::new(config)
+    let billing = voice_inference::billing::BillingClient::new(config)
         .await
         .unwrap();
 
-    // price_per_input_token = 1, price_per_output_token = 2
-    let cost = billing.calculate_cost(100, 50);
-    assert_eq!(cost, 100 * 1 + 50 * 2); // 200
+    // price_per_1k_characters = 10
+    // 1000 chars -> 10 base units
+    let cost = billing.calculate_cost(1000);
+    assert_eq!(cost, 10);
 }
 
-// ─── SSE Parsing Tests ──────────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_sse_usage_extraction() {
-    let sse_data = concat!(
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
-        "data: [DONE]\n\n",
-    );
-
-    let (prompt_tokens, completion_tokens) = parse_sse_usage(sse_data);
-    assert_eq!(prompt_tokens, 10);
-    assert_eq!(completion_tokens, 5);
-}
-
-#[tokio::test]
-async fn test_sse_no_usage_in_chunks() {
-    let sse_data = concat!(
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-        "data: [DONE]\n\n",
-    );
-
-    let (prompt_tokens, completion_tokens) = parse_sse_usage(sse_data);
-    assert_eq!(prompt_tokens, 0);
-    assert_eq!(completion_tokens, 0);
-}
-
-#[tokio::test]
-async fn test_sse_done_marker_present() {
-    let sse_data = concat!(
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n",
-        "data: [DONE]\n\n",
-    );
-
-    assert!(sse_data.contains("[DONE]"));
-}
-
-/// Test that SSE data split mid-line across chunk boundaries is handled correctly.
-/// This verifies the line_buf logic reassembles partial lines before parsing.
-#[tokio::test]
-async fn test_sse_chunk_boundary_splits() {
-    // Simulate data arriving in chunks that split in the middle of a JSON line
-    let chunks: Vec<&str> = vec![
-        "data: {\"id\":\"chatcm",                                  // split mid-JSON
-        "pl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"He", // split mid-value
-        "llo\"},\"finish_reason\":null}]}\n\n",                     // completes the line
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
-        "data: [DONE]\n\n",
-    ];
-
-    // Use the same line_buf logic as server.rs to parse usage across chunk boundaries
-    let mut line_buf = String::new();
-    let mut prompt_tokens = 0u32;
-    let mut completion_tokens = 0u32;
-
-    for chunk in &chunks {
-        line_buf.push_str(chunk);
-
-        while let Some(newline_pos) = line_buf.find('\n') {
-            {
-                let complete_line = &line_buf[..newline_pos];
-                if let Some(json_str) = complete_line.strip_prefix("data: ") {
-                    let json_str = json_str.trim();
-                    if json_str != "[DONE]" {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                            if let Some(usage) = val.get("usage") {
-                                if !usage.is_null() {
-                                    prompt_tokens = usage
-                                        .get("prompt_tokens")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0)
-                                        as u32;
-                                    completion_tokens = usage
-                                        .get("completion_tokens")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0)
-                                        as u32;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            line_buf.replace_range(..newline_pos + 1, "");
-        }
-    }
-
-    assert_eq!(
-        prompt_tokens, 10,
-        "should extract prompt_tokens across chunk boundaries"
-    );
-    assert_eq!(
-        completion_tokens, 5,
-        "should extract completion_tokens across chunk boundaries"
-    );
-}
-
-fn parse_sse_usage(data: &str) -> (u32, u32) {
-    let mut prompt_tokens = 0u32;
-    let mut completion_tokens = 0u32;
-
-    for line in data.lines() {
-        if let Some(json_str) = line.strip_prefix("data: ") {
-            if json_str.trim() == "[DONE]" {
-                continue;
-            }
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                if let Some(usage) = val.get("usage") {
-                    if !usage.is_null() {
-                        prompt_tokens = usage
-                            .get("prompt_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-                        completion_tokens = usage
-                            .get("completion_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-                    }
-                }
-            }
-        }
-    }
-
-    (prompt_tokens, completion_tokens)
-}
-
-// ─── Handler-level integration tests ────────────────────────────────────
+// --- Handler-level integration tests ---
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -348,7 +222,7 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Returns (server_port, _guard) — caller must hold _guard to keep the server alive.
+/// Returns (server_port, _guard) -- caller must hold _guard to keep the server alive.
 async fn start_test_server(
     vllm_port: u16,
 ) -> (u16, tokio::sync::watch::Sender<bool>, JoinHandle<()>) {
@@ -358,9 +232,9 @@ async fn start_test_server(
     config.server.host = "127.0.0.1".into();
     let config = Arc::new(config);
 
-    let vllm = Arc::new(vllm_inference::vllm::VllmProcess::connect(config.clone()).unwrap());
+    let engine = Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
     let billing = Arc::new(
-        vllm_inference::billing::BillingClient::new(config.clone())
+        voice_inference::billing::BillingClient::new(config.clone())
             .await
             .unwrap(),
     );
@@ -368,17 +242,17 @@ async fn start_test_server(
     let semaphore = Arc::new(Semaphore::new(64));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    let state = vllm_inference::server::AppState {
+    let state = voice_inference::server::AppState {
         config,
-        vllm,
+        engine,
         billing,
         semaphore,
-        nonce_store: Arc::new(vllm_inference::server::NonceStore::load(None)),
+        nonce_store: Arc::new(voice_inference::server::NonceStore::load(None)),
         active_per_account: Arc::new(RwLock::new(HashMap::new())),
         operator_address,
     };
 
-    let handle = vllm_inference::server::start(state, shutdown_rx)
+    let handle = voice_inference::server::start(state, shutdown_rx)
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -386,7 +260,6 @@ async fn start_test_server(
 }
 
 /// Start a test server with billing_required = true.
-/// Returns (server_port, _guard) — caller must hold _guard to keep the server alive.
 async fn start_billing_required_server(
     vllm_port: u16,
 ) -> (u16, tokio::sync::watch::Sender<bool>, JoinHandle<()>) {
@@ -397,9 +270,9 @@ async fn start_billing_required_server(
     config.billing.billing_required = true;
     let config = Arc::new(config);
 
-    let vllm = Arc::new(vllm_inference::vllm::VllmProcess::connect(config.clone()).unwrap());
+    let engine = Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
     let billing = Arc::new(
-        vllm_inference::billing::BillingClient::new(config.clone())
+        voice_inference::billing::BillingClient::new(config.clone())
             .await
             .unwrap(),
     );
@@ -407,17 +280,17 @@ async fn start_billing_required_server(
     let semaphore = Arc::new(Semaphore::new(64));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    let state = vllm_inference::server::AppState {
+    let state = voice_inference::server::AppState {
         config,
-        vllm,
+        engine,
         billing,
         semaphore,
-        nonce_store: Arc::new(vllm_inference::server::NonceStore::load(None)),
+        nonce_store: Arc::new(voice_inference::server::NonceStore::load(None)),
         active_per_account: Arc::new(RwLock::new(HashMap::new())),
         operator_address,
     };
 
-    let handle = vllm_inference::server::start(state, shutdown_rx)
+    let handle = voice_inference::server::start(state, shutdown_rx)
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -425,23 +298,18 @@ async fn start_billing_required_server(
 }
 
 #[tokio::test]
-async fn test_streaming_through_handler() {
+async fn test_speech_synthesis_through_handler() {
     let mock_vllm = MockServer::start().await;
 
-    let sse_body = concat!(
-        "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n",
-        "data: [DONE]\n\n",
-    );
+    // Mock vLLM-Omni returning audio bytes
+    let audio_bytes = vec![0xFF, 0xFB, 0x90, 0x00]; // fake MP3 header
 
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
+        .and(path("/v1/audio/speech"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(sse_body),
+                .insert_header("content-type", "audio/mpeg")
+                .set_body_bytes(audio_bytes.clone()),
         )
         .mount(&mock_vllm)
         .await;
@@ -451,12 +319,11 @@ async fn test_streaming_through_handler() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!(
-            "http://127.0.0.1:{server_port}/v1/chat/completions"
+            "http://127.0.0.1:{server_port}/v1/audio/speech"
         ))
         .json(&serde_json::json!({
-            "model": "test-model",
-            "messages": [{"role": "user", "content": "Hi"}],
-            "stream": true,
+            "input": "Hello, world!",
+            "voice": "alloy",
         }))
         .send()
         .await
@@ -469,178 +336,74 @@ async fn test_streaming_through_handler() {
             .unwrap()
             .to_str()
             .unwrap(),
-        "text/event-stream"
+        "audio/mpeg"
     );
 
-    let body = resp.text().await.unwrap();
-    let data_lines: Vec<&str> = body.lines().filter(|l| l.starts_with("data: ")).collect();
+    let body = resp.bytes().await.unwrap();
+    assert_eq!(body.to_vec(), audio_bytes);
+}
 
-    // At least one JSON event + the [DONE] marker
-    assert!(
-        data_lines.len() >= 2,
-        "expected at least 2 data lines, got {}",
-        data_lines.len()
-    );
+#[tokio::test]
+async fn test_speech_synthesis_wav_format() {
+    let mock_vllm = MockServer::start().await;
 
-    // First data line should parse as valid JSON with choices
-    let first_json = data_lines[0].strip_prefix("data: ").unwrap();
-    let parsed: serde_json::Value =
-        serde_json::from_str(first_json).expect("first data line should be valid JSON");
-    assert!(
-        parsed.get("choices").is_some(),
-        "data event should have choices"
-    );
+    let audio_bytes = vec![0x52, 0x49, 0x46, 0x46]; // RIFF header
 
-    // Last data line must be the terminal [DONE] marker
+    Mock::given(method("POST"))
+        .and(path("/v1/audio/speech"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "audio/wav")
+                .set_body_bytes(audio_bytes.clone()),
+        )
+        .mount(&mock_vllm)
+        .await;
+
+    let (server_port, _shutdown_tx, _handle) = start_test_server(mock_vllm.address().port()).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{server_port}/v1/audio/speech"
+        ))
+        .json(&serde_json::json!({
+            "input": "Hello, world!",
+            "response_format": "wav",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
     assert_eq!(
-        *data_lines.last().unwrap(),
-        "data: [DONE]",
-        "stream must end with data: [DONE]"
-    );
-
-    // Every non-DONE data line should be valid JSON
-    for line in &data_lines {
-        let payload = line.strip_prefix("data: ").unwrap();
-        if payload.trim() == "[DONE]" {
-            continue;
-        }
-        serde_json::from_str::<serde_json::Value>(payload)
-            .unwrap_or_else(|_| panic!("expected valid JSON in SSE event: {payload}"));
-    }
-}
-
-#[tokio::test]
-async fn test_non_streaming_through_handler() {
-    let mock_vllm = MockServer::start().await;
-
-    let response_body = serde_json::json!({
-        "id": "chatcmpl-test",
-        "object": "chat.completion",
-        "created": 1700000000u64,
-        "model": "test-model",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": "Hello!"},
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 5,
-            "completion_tokens": 1,
-            "total_tokens": 6
-        }
-    });
-
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
-        .mount(&mock_vllm)
-        .await;
-
-    let (server_port, _shutdown_tx, _handle) = start_test_server(mock_vllm.address().port()).await;
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!(
-            "http://127.0.0.1:{server_port}/v1/chat/completions"
-        ))
-        .json(&serde_json::json!({
-            "model": "test-model",
-            "messages": [{"role": "user", "content": "Hi"}],
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), 200);
-    // Non-streaming should return application/json, not text/event-stream
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        content_type.contains("application/json"),
-        "non-streaming response should be JSON, got: {content_type}"
-    );
-
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["choices"][0]["message"]["content"], "Hello!");
-    assert_eq!(body["usage"]["prompt_tokens"], 5);
-}
-
-#[tokio::test]
-async fn test_stream_field_defaults_to_false() {
-    // Verify that omitting "stream" from the request body results in non-streaming
-    let mock_vllm = MockServer::start().await;
-
-    let response_body = serde_json::json!({
-        "id": "chatcmpl-default",
-        "object": "chat.completion",
-        "created": 1700000000u64,
-        "model": "test-model",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": "Default"},
-            "finish_reason": "stop"
-        }],
-        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
-    });
-
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
-        .mount(&mock_vllm)
-        .await;
-
-    let (server_port, _shutdown_tx, _handle) = start_test_server(mock_vllm.address().port()).await;
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!(
-            "http://127.0.0.1:{server_port}/v1/chat/completions"
-        ))
-        .json(&serde_json::json!({
-            "messages": [{"role": "user", "content": "Hi"}],
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), 200);
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        content_type.contains("application/json"),
-        "omitting stream field should default to non-streaming JSON, got: {content_type}"
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "audio/wav"
     );
 }
 
-// ─── Billing Settlement Tests ────────────────────────────────────────────
+// --- Billing Settlement Tests ---
 
 #[tokio::test]
 async fn test_billing_actual_cost_less_than_preauth() {
     let config = Arc::new(test_config(8000));
-    let billing = vllm_inference::billing::BillingClient::new(config)
+    let billing = voice_inference::billing::BillingClient::new(config)
         .await
         .unwrap();
 
-    // price_per_input = 1, price_per_output = 2
-    // 10 input + 5 output = 10*1 + 5*2 = 20
-    let actual_cost = billing.calculate_cost(10, 5);
-    assert_eq!(actual_cost, 20);
+    // price_per_1k_characters = 10
+    // 500 chars -> 500 * 10 / 1000 = 5
+    let actual_cost = billing.calculate_cost(500);
+    assert_eq!(actual_cost, 5);
 
-    // Pre-auth ceiling was 1000 — charge_amount should be min(20, 1000) = 20
+    // Pre-auth ceiling was 1000 -- charge_amount should be min(5, 1000) = 5
     let preauth_amount: u64 = 1000;
     let charge_amount = actual_cost.min(preauth_amount);
     assert_eq!(
-        charge_amount, 20,
+        charge_amount, 5,
         "should charge actual cost, not the full pre-auth"
     );
 }
@@ -648,16 +411,16 @@ async fn test_billing_actual_cost_less_than_preauth() {
 #[tokio::test]
 async fn test_billing_actual_cost_exceeds_preauth_cap() {
     let config = Arc::new(test_config(8000));
-    let billing = vllm_inference::billing::BillingClient::new(config)
+    let billing = voice_inference::billing::BillingClient::new(config)
         .await
         .unwrap();
 
-    // price_per_input = 1, price_per_output = 2
-    // 500 input + 300 output = 500 + 600 = 1100
-    let actual_cost = billing.calculate_cost(500, 300);
-    assert_eq!(actual_cost, 1100);
+    // price_per_1k_characters = 10
+    // 50000 chars -> 50000 * 10 / 1000 = 500
+    let actual_cost = billing.calculate_cost(50000);
+    assert_eq!(actual_cost, 500);
 
-    // Pre-auth ceiling was 100 — charge_amount should be min(1100, 100) = 100
+    // Pre-auth ceiling was 100 -- charge_amount should be min(500, 100) = 100
     let preauth_amount: u64 = 100;
     let charge_amount = actual_cost.min(preauth_amount);
     assert_eq!(
@@ -669,11 +432,11 @@ async fn test_billing_actual_cost_exceeds_preauth_cap() {
 #[tokio::test]
 async fn test_billing_zero_usage_yields_zero_charge() {
     let config = Arc::new(test_config(8000));
-    let billing = vllm_inference::billing::BillingClient::new(config)
+    let billing = voice_inference::billing::BillingClient::new(config)
         .await
         .unwrap();
 
-    let actual_cost = billing.calculate_cost(0, 0);
+    let actual_cost = billing.calculate_cost(0);
     assert_eq!(actual_cost, 0);
 
     let preauth_amount: u64 = 500;
@@ -684,7 +447,7 @@ async fn test_billing_zero_usage_yields_zero_charge() {
     );
 }
 
-// ─── Policy Enforcement Tests ───────────────────────────────────────────
+// --- Policy Enforcement Tests ---
 
 #[tokio::test]
 async fn test_billing_required_rejects_missing_spend_auth() {
@@ -692,15 +455,12 @@ async fn test_billing_required_rejects_missing_spend_auth() {
 
     // Set up a mock response (won't be reached because billing check happens first)
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": "chatcmpl-test",
-            "object": "chat.completion",
-            "created": 1700000000u64,
-            "model": "test-model",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
-        })))
+        .and(path("/v1/audio/speech"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "audio/mpeg")
+                .set_body_bytes(vec![0xFF, 0xFB]),
+        )
         .mount(&mock_vllm)
         .await;
 
@@ -710,11 +470,10 @@ async fn test_billing_required_rejects_missing_spend_auth() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!(
-            "http://127.0.0.1:{server_port}/v1/chat/completions"
+            "http://127.0.0.1:{server_port}/v1/audio/speech"
         ))
         .json(&serde_json::json!({
-            "model": "test-model",
-            "messages": [{"role": "user", "content": "Hi"}],
+            "input": "Hello, world!",
         }))
         .send()
         .await
@@ -725,79 +484,21 @@ async fn test_billing_required_rejects_missing_spend_auth() {
         402,
         "requests without spend_auth should be rejected with 402 when billing_required is true"
     );
-
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "missing_spend_auth");
 }
 
-#[tokio::test]
-async fn test_max_spend_per_request_rejection() {
-    let mock_vllm = MockServer::start().await;
-
-    // No mock needed — the request should fail before reaching vLLM
-    let (server_port, _shutdown_tx, _handle) = start_test_server(mock_vllm.address().port()).await;
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!(
-            "http://127.0.0.1:{server_port}/v1/chat/completions"
-        ))
-        .json(&serde_json::json!({
-            "model": "test-model",
-            "messages": [{"role": "user", "content": "Hi"}],
-            "spend_auth": {
-                "commitment": "0x0000000000000000000000000000000000000000000000000000000000000001",
-                "service_id": 1,
-                "job_index": 0,
-                "amount": "99999999",
-                "operator": "0x0000000000000000000000000000000000000001",
-                "nonce": 1,
-                "expiry": 9999999999u64,
-                "signature": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    // The spend_auth signature is invalid, so it will be rejected at step 3d
-    // (signature recovery). To test max_spend specifically, we verify the
-    // enforcement logic directly:
-    let max_spend: u64 = 1_000_000; // from test_config
-    let requested: u64 = 99_999_999;
-    assert!(
-        requested > max_spend,
-        "test setup: requested amount must exceed max_spend_per_request"
-    );
-
-    // The response will be PAYMENT_REQUIRED due to invalid sig, which is
-    // checked after amount validation. We confirm the handler rejects it.
-    assert!(
-        resp.status() == 400 || resp.status() == 402,
-        "request should be rejected, got {}",
-        resp.status()
-    );
-}
-
-// ─── Job Handler Error Path Tests ───────────────────────────────────────
+// --- Job Handler Error Path Tests ---
 
 #[tokio::test]
-async fn test_run_inference_returns_error_on_connection_failure() {
-    // Verify that run_inference returns an error (not a panic) when vLLM
-    // is unreachable. We can't call the handler directly because it needs
-    // TangleArg extraction, but we can verify the underlying HTTP call
-    // pattern returns an error instead of panicking.
+async fn test_run_tts_returns_error_on_connection_failure() {
     let client = reqwest::Client::new();
 
     // Connect to a port where nothing is listening
     let result = client
-        .post("http://127.0.0.1:1/v1/chat/completions")
+        .post("http://127.0.0.1:1/v1/audio/speech")
         .json(&serde_json::json!({
             "model": "default",
-            "messages": [{"role": "user", "content": "test"}],
-            "max_tokens": 10,
-            "temperature": 0.7,
-            "stream": false,
+            "input": "test",
+            "voice": "alloy",
         }))
         .send()
         .await;
@@ -805,11 +506,11 @@ async fn test_run_inference_returns_error_on_connection_failure() {
     // The key assertion: this should be an Err, not a panic.
     assert!(
         result.is_err(),
-        "connection to unreachable vLLM should return Err, not panic"
+        "connection to unreachable engine should return Err, not panic"
     );
 }
 
-// ─── Config Tests ────────────────────────────────────────────────────────
+// --- Config Tests ---
 
 #[tokio::test]
 async fn test_config_default_max_concurrent_requests() {
@@ -832,111 +533,56 @@ async fn test_config_debug_redacts_operator_key() {
     );
 }
 
-// ─── Wiremock Integration Tests ──────────────────────────────────────────
+// --- Wiremock Integration Tests ---
 
 #[tokio::test]
-async fn test_non_streaming_via_wiremock() {
+async fn test_speech_via_wiremock() {
     let mock_server = MockServer::start().await;
 
-    let response_body = serde_json::json!({
-        "id": "chatcmpl-test",
-        "object": "chat.completion",
-        "created": 1700000000u64,
-        "model": "test-model",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": "Hello!"},
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 5,
-            "completion_tokens": 1,
-            "total_tokens": 6
-        }
-    });
+    let audio_bytes = vec![0xFF, 0xFB, 0x90, 0x00];
 
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
-        .mount(&mock_server)
-        .await;
-
-    let port = mock_server.address().port();
-    let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
-
-    let vllm_body = serde_json::json!({
-        "model": "test-model",
-        "messages": [{"role": "user", "content": "Hi"}],
-        "max_tokens": 512,
-        "temperature": 0.7,
-        "stream": false,
-    });
-
-    let resp = client
-        .post(&url)
-        .json(&vllm_body)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap()
-        .json::<serde_json::Value>()
-        .await
-        .unwrap();
-
-    assert_eq!(resp["choices"][0]["message"]["content"], "Hello!");
-    assert_eq!(resp["usage"]["prompt_tokens"], 5);
-    assert_eq!(resp["usage"]["completion_tokens"], 1);
-}
-
-#[tokio::test]
-async fn test_streaming_via_wiremock() {
-    let mock_server = MockServer::start().await;
-
-    let sse_body = concat!(
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n",
-        "data: [DONE]\n\n",
-    );
-
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
+        .and(path("/v1/audio/speech"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(sse_body),
+                .insert_header("content-type", "audio/mpeg")
+                .set_body_bytes(audio_bytes.clone()),
         )
         .mount(&mock_server)
         .await;
 
     let port = mock_server.address().port();
     let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let url = format!("http://127.0.0.1:{port}/v1/audio/speech");
 
-    let vllm_body = serde_json::json!({
+    let body = serde_json::json!({
         "model": "test-model",
-        "messages": [{"role": "user", "content": "Hi"}],
-        "max_tokens": 512,
-        "temperature": 0.7,
-        "stream": true,
-        "stream_options": {"include_usage": true},
+        "input": "Hello, world!",
+        "voice": "alloy",
+        "response_format": "mp3",
+        "speed": 1.0,
     });
 
-    let resp = client.post(&url).json(&vllm_body).send().await.unwrap();
-    assert_eq!(resp.status(), 200);
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
 
-    let body = resp.text().await.unwrap();
-    assert!(body.contains("data: "), "response should contain SSE data");
-    assert!(
-        body.contains("[DONE]"),
-        "response should contain [DONE] marker"
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "audio/mpeg"
     );
-    assert!(
-        body.contains("\"prompt_tokens\":5"),
-        "response should contain usage"
-    );
+
+    let response_bytes = resp.bytes().await.unwrap();
+    assert_eq!(response_bytes.to_vec(), audio_bytes);
 }
 
 #[tokio::test]
@@ -944,21 +590,20 @@ async fn test_upstream_error_returns_error_status() {
     let mock_server = MockServer::start().await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
+        .and(path("/v1/audio/speech"))
         .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
         .mount(&mock_server)
         .await;
 
     let port = mock_server.address().port();
     let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let url = format!("http://127.0.0.1:{port}/v1/audio/speech");
 
     let resp = client
         .post(&url)
         .json(&serde_json::json!({
             "model": "test-model",
-            "messages": [{"role": "user", "content": "Hi"}],
-            "stream": false,
+            "input": "Hello",
         }))
         .send()
         .await

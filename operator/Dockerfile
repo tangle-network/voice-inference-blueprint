@@ -17,13 +17,13 @@ COPY Cargo.toml ./
 COPY operator/ operator/
 
 # Build release binary
-RUN cargo build --release -p vllm-operator
+RUN cargo build --release -p voice-operator
 
 # ── Final image ──────────────────────────────────────────────────────────
 FROM base
 
 # Copy operator binary
-COPY --from=builder /build/target/release/vllm-operator /usr/local/bin/vllm-operator
+COPY --from=builder /build/target/release/voice-operator /usr/local/bin/voice-operator
 
 # Create non-root user
 RUN useradd -m -s /bin/bash operator
@@ -31,7 +31,7 @@ USER operator
 WORKDIR /home/operator
 
 # Default config location
-ENV VLLM_OP_CONFIG=/home/operator/config.json
+ENV VOICE_OP_CONFIG=/home/operator/config.json
 
 # Expose operator HTTP port and vLLM internal port
 EXPOSE 8080 8000
@@ -40,4 +40,4 @@ EXPOSE 8080 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-ENTRYPOINT ["vllm-operator"]
+ENTRYPOINT ["voice-operator"]

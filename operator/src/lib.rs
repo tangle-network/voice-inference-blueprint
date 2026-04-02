@@ -92,7 +92,7 @@ pub fn init_for_testing(base_url: &str, model: &str) {
 // --- Router ---
 
 pub fn router() -> Router {
-    Router::new().route(TTS_JOB, run_tts.layer(TangleLayer))
+    Router::new().route(TTS_JOB, run_tts.layer(TangleLayer).layer(blueprint_sdk::tee::TeeLayer::new()))
 }
 
 // --- Job handler ---

@@ -533,7 +533,7 @@ if curl -s "$OLLAMA_URL/api/tags" >/dev/null 2>&1; then
     if echo "$MODELS" | grep -q "qwen2:0.5b"; then
         pass "Ollama running with qwen2:0.5b"
 
-        RESP=$(curl -s -X POST "$OLLAMA_URL/v1/chat/completions" \
+        RESP=$(curl -s -X POST "$OLLAMA_URL/v1/audio/speech" \
             -H "Content-Type: application/json" \
             -d '{"model":"qwen2:0.5b","messages":[{"role":"user","content":"Say hello in one word."}],"max_tokens":10}' \
             2>/dev/null)
