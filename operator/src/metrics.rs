@@ -1,5 +1,5 @@
-use std::sync::LazyLock;
-use std::time::Instant;
+use blueprint_std::sync::LazyLock;
+use blueprint_std::time::Instant;
 
 use prometheus::{
     Encoder, Gauge, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,

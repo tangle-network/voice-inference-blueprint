@@ -6,9 +6,9 @@ pub mod voice_engine;
 
 pub mod server;
 
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
-use std::time::Duration;
+use blueprint_std::collections::HashMap;
+use blueprint_std::sync::{Arc, OnceLock, RwLock};
+use blueprint_std::time::Duration;
 
 use alloy_sol_types::sol;
 use blueprint_sdk::macros::debug_job;

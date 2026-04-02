@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::path::PathBuf;
+use blueprint_std::fmt;
+use blueprint_std::path::PathBuf;
 
 /// Top-level operator configuration.
 #[derive(Clone, Serialize, Deserialize)]
