@@ -1,4 +1,4 @@
-use blueprint_std::sync::Arc;
+use blueprint_sdk::std::sync::Arc;
 
 use blueprint_sdk::contexts::tangle::TangleClientContext;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
