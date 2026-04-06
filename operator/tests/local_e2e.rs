@@ -27,10 +27,8 @@ async fn test_real_tts_via_vllm() {
         return;
     }
 
-    let base_url =
-        env::var("VLLM_TTS_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
-    let model =
-        env::var("VLLM_TTS_MODEL").unwrap_or_else(|_| "Qwen/Qwen3-TTS-1.7B".to_string());
+    let base_url = env::var("VLLM_TTS_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+    let model = env::var("VLLM_TTS_MODEL").unwrap_or_else(|_| "Qwen/Qwen3-TTS-1.7B".to_string());
 
     let client = reqwest::Client::new();
 

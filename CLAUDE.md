@@ -6,16 +6,14 @@ Voice Inference Blueprint for Tangle Network. Operators serve TTS inference via 
 
 ## Architecture
 
-Uses the Tangle Blueprint SDK (`blueprint-sdk` crate) with the canonical lib+bin pattern.
+Uses the Tangle Blueprint SDK (`blueprint-sdk` crate) with the canonical lib+bin pattern, and depends on [`tangle-inference-core`](../tangle-inference-core/) for all shared inference-operator infrastructure (billing, metrics, health, nonce store, spend-auth validation, x402 payment headers, AppState builder).
 
 - **contracts/**: Solidity BSM (InferenceBSM) -- validates operator registration (GPU caps), restricts payment to tsUSD, stores model metadata
-- **operator/src/lib.rs**: Library crate -- `router()`, `run_tts` job handler (TangleArg/TangleResult), `VoiceInferenceServer` BackgroundService, sol! ABI types
+- **operator/src/lib.rs**: Library crate -- `router()`, `run_tts` job handler (TangleArg/TangleResult), `VoiceInferenceServer` BackgroundService, sol! ABI types, re-exports from `tangle-inference-core`
 - **operator/src/main.rs**: Binary crate -- BlueprintRunner wiring only (BlueprintEnvironment, TangleProducer, TangleConsumer)
-- **operator/src/server.rs**: Axum HTTP server with OpenAI-compatible TTS endpoint (runs as BackgroundService)
-- **operator/src/billing.rs**: ShieldedCredits on-chain billing (authorizeSpend/claimPayment) and off-chain EIP-712 SpendAuth signature verification
+- **operator/src/server.rs**: Voice-specific Axum handlers + `VoiceBackend` (attached to the shared `AppState` via `AppStateBuilder`). Nonce store, spend-auth validation, x402 headers, metrics — all imported from `tangle-inference-core`.
 - **operator/src/voice_engine.rs**: vLLM-Omni subprocess management (spawn, health check, speech synthesis proxy)
-- **operator/src/config.rs**: Operator config structs (VoiceModelConfig, billing, GPU, server)
-- **operator/src/health.rs**: GPU detection via nvidia-smi
+- **operator/src/config.rs**: Top-level `OperatorConfig` composing `tangle-inference-core::{TangleConfig, ServerConfig, BillingConfig, GpuConfig}` with a voice-specific `VoiceConfig` (which carries `price_per_1k_chars`)
 - **sdk/**: TypeScript client -- signs SpendAuth, discovers operators, sends TTS requests
 
 ## Build Commands

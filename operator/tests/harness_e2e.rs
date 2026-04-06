@@ -133,8 +133,7 @@ async fn test_tts_job_lifecycle() -> Result<()> {
         println!("Got result ({} bytes)", output.len());
 
         // 6. Decode and verify
-        let result =
-            TTSResult::abi_decode(&output).context("failed to decode TTSResult")?;
+        let result = TTSResult::abi_decode(&output).context("failed to decode TTSResult")?;
         println!("  audioData: {} bytes", result.audioData.len());
         println!("  characterCount: {}", result.characterCount);
         println!("  format: {}", result.format);
@@ -143,13 +142,20 @@ async fn test_tts_job_lifecycle() -> Result<()> {
             !result.audioData.is_empty(),
             "expected non-empty audio data"
         );
-        assert!(result.characterCount > 0, "expected nonzero character count");
+        assert!(
+            result.characterCount > 0,
+            "expected nonzero character count"
+        );
         assert_eq!(result.format, "mp3");
 
         println!("\n  ✓ Single TTS job lifecycle passed");
 
         // 7. Submit multiple sequential jobs
-        let inputs = ["Hello", "Explain gravity in simple terms", "Write a haiku about the moon"];
+        let inputs = [
+            "Hello",
+            "Explain gravity in simple terms",
+            "Write a haiku about the moon",
+        ];
 
         for input in &inputs {
             let request = TTSRequest {

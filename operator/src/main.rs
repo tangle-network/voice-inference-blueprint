@@ -7,7 +7,7 @@ use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 
 use voice_inference::config::OperatorConfig;
-use voice_inference::health;
+use voice_inference::detect_gpus;
 use voice_inference::VoiceInferenceServer;
 
 fn setup_log() {
@@ -22,7 +22,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
     // Check GPU availability (non-fatal)
-    match health::detect_gpus().await {
+    match detect_gpus().await {
         Ok(gpus) => {
             tracing::info!(count = gpus.len(), "detected GPUs");
             for gpu in &gpus {

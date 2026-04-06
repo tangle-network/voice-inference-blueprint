@@ -1,13 +1,21 @@
-pub mod billing;
 pub mod config;
-pub mod health;
-pub mod metrics;
+pub mod server;
 pub mod voice_engine;
 
-pub mod server;
+// Re-export shared infrastructure so downstream crates can `use voice_inference::*`.
+pub use tangle_inference_core::server::{
+    error_response, extract_x402_spend_auth, payment_required, settle_billing, validate_spend_auth,
+};
+pub use tangle_inference_core::{
+    detect_gpus, parse_nvidia_smi_output, AppState, AppStateBuilder, BillingClient, CostModel,
+    CostParams, GpuInfo, NonceStore, PerCharCostModel, RequestGuard, SpendAuthPayload,
+};
+// Re-export metrics module for tests/downstream use.
+pub use tangle_inference_core::metrics;
+// Alias billing module path for downstream callers.
+pub use tangle_inference_core::billing;
 
-use blueprint_sdk::std::collections::HashMap;
-use blueprint_sdk::std::sync::{Arc, OnceLock, RwLock};
+use blueprint_sdk::std::sync::{Arc, OnceLock};
 use blueprint_sdk::std::time::Duration;
 
 use alloy_sol_types::sol;
@@ -18,7 +26,7 @@ use blueprint_sdk::runner::BackgroundService;
 use blueprint_sdk::tangle::extract::{TangleArg, TangleResult};
 use blueprint_sdk::tangle::layers::TangleLayer;
 use blueprint_sdk::Job;
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::oneshot;
 
 use crate::config::OperatorConfig;
 use crate::voice_engine::VoiceEngine;
@@ -92,15 +100,17 @@ pub fn init_for_testing(base_url: &str, model: &str) {
 // --- Router ---
 
 pub fn router() -> Router {
-    Router::new().route(TTS_JOB, run_tts.layer(TangleLayer).layer(blueprint_sdk::tee::TeeLayer::new()))
+    Router::new().route(
+        TTS_JOB,
+        run_tts
+            .layer(TangleLayer)
+            .layer(blueprint_sdk::tee::TeeLayer::new()),
+    )
 }
 
 // --- Job handler ---
 
 /// Handle a TTS job submitted on-chain.
-///
-/// Uses the voice engine endpoint registered by [`VoiceInferenceServer`] rather than
-/// hardcoded values. The shared reqwest::Client is reused across calls.
 #[debug_job]
 pub async fn run_tts(
     TangleArg(request): TangleArg<TTSRequest>,
@@ -165,14 +175,11 @@ pub async fn run_tts(
     }))
 }
 
-// --- Background service: HTTP server + vLLM subprocess ---
+// --- Background service: HTTP server + vLLM-Omni subprocess ---
 
 /// Runs the vLLM-Omni subprocess and the OpenAI-compatible HTTP proxy as a
-/// [`BackgroundService`]. This starts before the BlueprintRunner begins
-/// polling for on-chain jobs.
-///
-/// Includes a watchdog loop that monitors the vLLM process and respawns
-/// it if it exits unexpectedly.
+/// [`BackgroundService`]. Includes a watchdog loop that monitors the vLLM
+/// process and respawns it if it exits unexpectedly.
 #[derive(Clone)]
 pub struct VoiceInferenceServer {
     pub config: Arc<OperatorConfig>,
@@ -184,7 +191,7 @@ impl BackgroundService for VoiceInferenceServer {
         let config = self.config.clone();
 
         tokio::spawn(async move {
-            // 1. Start the vLLM subprocess
+            // 1. Start the vLLM-Omni subprocess
             let engine_handle = match VoiceEngine::spawn(config.clone()).await {
                 Ok(h) => Arc::new(h),
                 Err(e) => {
@@ -210,7 +217,7 @@ impl BackgroundService for VoiceInferenceServer {
             }
 
             // 2. Build billing client
-            let billing_client = match billing::BillingClient::new(config.clone()).await {
+            let billing_client = match BillingClient::new(&config.tangle, &config.billing) {
                 Ok(b) => Arc::new(b),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to create billing client");
@@ -219,30 +226,31 @@ impl BackgroundService for VoiceInferenceServer {
                 }
             };
 
-            // 3. Build semaphore from config (0 = unlimited)
-            let max_concurrent = config.server.max_concurrent_requests;
-            let semaphore = Arc::new(if max_concurrent == 0 {
-                Semaphore::new(Semaphore::MAX_PERMITS)
-            } else {
-                Semaphore::new(max_concurrent)
-            });
-
-            // 4. Create shutdown channel for graceful shutdown
+            // 3. Create shutdown channel for graceful shutdown
             let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-            // 5. Start the HTTP server
+            // 4. Build the HTTP server state via the shared AppStateBuilder,
+            //    attaching the voice engine as the backend extension.
             let operator_address = billing_client.operator_address();
-            let nonce_store = Arc::new(server::NonceStore::load(
-                config.billing.nonce_store_path.clone(),
-            ));
-            let state = server::AppState {
-                config: config.clone(),
-                engine: engine_handle.clone(),
-                billing: billing_client,
-                semaphore,
-                nonce_store,
-                active_per_account: Arc::new(RwLock::new(HashMap::new())),
-                operator_address,
+            let nonce_store = Arc::new(NonceStore::load(config.billing.nonce_store_path.clone()));
+            let backend = server::VoiceBackend::new(config.clone(), engine_handle.clone());
+
+            let state = match AppStateBuilder::new()
+                .billing(billing_client)
+                .nonce_store(nonce_store)
+                .server_config(Arc::new(config.server.clone()))
+                .billing_config(Arc::new(config.billing.clone()))
+                .tangle_config(Arc::new(config.tangle.clone()))
+                .operator_address(operator_address)
+                .backend(backend)
+                .build()
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to build AppState");
+                    let _ = tx.send(Err(RunnerError::Other(e.to_string().into())));
+                    return;
+                }
             };
 
             match server::start(state, shutdown_rx).await {
@@ -257,7 +265,7 @@ impl BackgroundService for VoiceInferenceServer {
                 }
             }
 
-            // 6. Watchdog loop: monitor vLLM process and respawn on crash.
+            // 5. Watchdog loop: monitor vLLM process and respawn on crash.
             let mut _live_handle: Option<VoiceEngine> = None;
             loop {
                 tokio::select! {
@@ -276,26 +284,22 @@ impl BackgroundService for VoiceInferenceServer {
                 if !engine_handle.is_healthy().await {
                     tracing::error!("vLLM health check failed — attempting respawn");
 
-                    // Shut down the old process
                     engine_handle.shutdown().await;
 
-                    // Attempt respawn with backoff
                     let mut respawn_delay = Duration::from_secs(5);
                     loop {
                         tracing::info!(delay_secs = respawn_delay.as_secs(), "respawning vLLM");
                         match VoiceEngine::spawn(config.clone()).await {
-                            Ok(new_handle) => {
-                                match new_handle.wait_ready().await {
-                                    Ok(()) => {
-                                        tracing::info!("vLLM respawned successfully");
-                                        _live_handle = Some(new_handle);
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(error = %e, "respawned vLLM failed readiness");
-                                    }
+                            Ok(new_handle) => match new_handle.wait_ready().await {
+                                Ok(()) => {
+                                    tracing::info!("vLLM respawned successfully");
+                                    _live_handle = Some(new_handle);
+                                    break;
                                 }
-                            }
+                                Err(e) => {
+                                    tracing::error!(error = %e, "respawned vLLM failed readiness");
+                                }
+                            },
                             Err(e) => {
                                 tracing::error!(error = %e, "failed to respawn vLLM");
                             }

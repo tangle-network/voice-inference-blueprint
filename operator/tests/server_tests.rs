@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -9,8 +8,10 @@ use wiremock::{
 };
 
 use voice_inference::config::{
-    BillingConfig, GpuConfig, OperatorConfig, ServerConfig, TangleConfig, VoiceModelConfig,
+    BillingConfig, GpuConfig, OperatorConfig, ServerConfig, TangleConfig, VoiceConfig,
 };
+use voice_inference::server::VoiceBackend;
+use voice_inference::{AppStateBuilder, BillingClient, NonceStore};
 
 fn test_config(vllm_port: u16) -> OperatorConfig {
     OperatorConfig {
@@ -18,17 +19,17 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             rpc_url: "http://localhost:8545".into(),
             chain_id: 31337,
             operator_key: "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".into(),
-            tangle_core: "0x0000000000000000000000000000000000000000".into(),
             shielded_credits: "0x0000000000000000000000000000000000000000".into(),
             blueprint_id: 1,
             service_id: Some(1),
         },
-        vllm: VoiceModelConfig {
+        vllm: VoiceConfig {
             model: "test-model".into(),
             max_model_len: 4096,
             host: "127.0.0.1".into(),
             port: vllm_port,
             tensor_parallel_size: 1,
+            price_per_1k_chars: 10,
             extra_args: vec![],
             command: "python3 -m vllm.entrypoints.openai.api_server".into(),
             hf_token: None,
@@ -42,26 +43,27 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             port: 8080,
             max_concurrent_requests: 2,
             max_request_body_bytes: 2 * 1024 * 1024,
-            request_timeout_secs: 300,
+            stream_timeout_secs: 300,
+            idle_chunk_timeout_secs: 30,
+            max_line_buf_bytes: 1024 * 1024,
             max_per_account_requests: 0,
         },
         billing: BillingConfig {
-            price_per_1k_characters: 10,
+            billing_required: false,
             max_spend_per_request: 1_000_000,
             min_credit_balance: 1000,
-            billing_required: false, // Disabled in tests to avoid needing real spend_auth
             min_charge_amount: 0,
             claim_max_retries: 3,
             clock_skew_tolerance_secs: 30,
             max_gas_price_gwei: 0,
             nonce_store_path: None,
-            required: false,
             payment_token_address: None,
         },
         gpu: GpuConfig {
             expected_gpu_count: 0,
             min_vram_mib: 0,
             monitor_interval_secs: 30,
+            gpu_model: None,
         },
         rln: None,
     }
@@ -71,96 +73,19 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
 
 #[tokio::test]
 async fn test_metrics_gather_produces_valid_output() {
-    let mut guard = voice_inference::metrics::RequestGuard::new();
-    guard.set_tokens(1, 1);
+    let mut guard = voice_inference::metrics::RequestGuard::new("test-model");
+    guard.set_tokens(1, 0);
     guard.set_success();
     drop(guard);
 
     let output = voice_inference::metrics::gather();
     assert!(
-        output.contains("vllm_operator_active_requests"),
+        output.contains("tangle_operator_active_requests"),
         "missing active_requests metric"
     );
     assert!(
-        output.contains("vllm_operator_request_count"),
-        "missing request_count metric"
-    );
-    assert!(
-        output.contains("vllm_operator_request_duration_seconds"),
-        "missing request_duration_seconds metric"
-    );
-    assert!(
-        output.contains("vllm_operator_tokens_total"),
-        "missing tokens_total metric"
-    );
-}
-
-#[tokio::test]
-async fn test_request_guard_tracks_active_requests() {
-    use voice_inference::metrics::{RequestGuard, ACTIVE_REQUESTS};
-
-    let initial = ACTIVE_REQUESTS.get();
-
-    let guard1 = RequestGuard::new();
-    assert!(ACTIVE_REQUESTS.get() >= initial + 1.0);
-
-    let guard2 = RequestGuard::new();
-    assert!(ACTIVE_REQUESTS.get() >= initial + 2.0);
-
-    drop(guard1);
-    drop(guard2);
-}
-
-#[tokio::test]
-async fn test_request_guard_records_tokens_on_drop() {
-    use voice_inference::metrics::{RequestGuard, TOKENS_TOTAL};
-
-    let prompt_before = TOKENS_TOTAL.with_label_values(&["prompt"]).get();
-    let completion_before = TOKENS_TOTAL.with_label_values(&["completion"]).get();
-
-    let mut guard = RequestGuard::new();
-    guard.set_tokens(100, 50);
-    guard.set_success();
-    drop(guard);
-
-    assert!(
-        TOKENS_TOTAL.with_label_values(&["prompt"]).get() >= prompt_before + 100,
-        "prompt tokens should have increased by at least 100"
-    );
-    assert!(
-        TOKENS_TOTAL.with_label_values(&["completion"]).get() >= completion_before + 50,
-        "completion tokens should have increased by at least 50"
-    );
-}
-
-#[tokio::test]
-async fn test_request_guard_defaults_to_error() {
-    use voice_inference::metrics::{RequestGuard, REQUEST_COUNT};
-
-    let error_before = REQUEST_COUNT.with_label_values(&["error"]).get();
-
-    let guard = RequestGuard::new();
-    drop(guard);
-
-    assert!(
-        REQUEST_COUNT.with_label_values(&["error"]).get() >= error_before + 1,
-        "error count should have increased by at least 1"
-    );
-}
-
-#[tokio::test]
-async fn test_request_guard_records_success() {
-    use voice_inference::metrics::{RequestGuard, REQUEST_COUNT};
-
-    let success_before = REQUEST_COUNT.with_label_values(&["success"]).get();
-
-    let mut guard = RequestGuard::new();
-    guard.set_success();
-    drop(guard);
-
-    assert!(
-        REQUEST_COUNT.with_label_values(&["success"]).get() >= success_before + 1,
-        "success count should have increased by at least 1"
+        output.contains("tangle_operator_requests_total"),
+        "missing requests_total metric"
     );
 }
 
@@ -176,40 +101,64 @@ async fn test_semaphore_limits_concurrency() {
     let p2 = semaphore.clone().try_acquire_owned();
     assert!(p2.is_ok());
 
-    // Third acquire should fail
     let p3 = semaphore.clone().try_acquire_owned();
     assert!(p3.is_err());
 
-    // Drop one permit, now we can acquire again
     drop(p1);
     let p4 = semaphore.clone().try_acquire_owned();
     assert!(p4.is_ok());
 }
 
-#[tokio::test]
-async fn test_semaphore_zero_config_means_unlimited() {
-    let semaphore = Arc::new(Semaphore::new(Semaphore::MAX_PERMITS));
+// --- Cost Model Tests ---
 
-    let mut permits = Vec::new();
-    for _ in 0..1000 {
-        permits.push(semaphore.clone().try_acquire_owned().unwrap());
-    }
-    assert_eq!(permits.len(), 1000);
+#[tokio::test]
+async fn test_backend_calculate_cost() {
+    let config = Arc::new(test_config(8000));
+    let engine =
+        Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
+    let backend = VoiceBackend::new(config, engine);
+
+    // price_per_1k_chars = 10
+    // 1000 chars -> 10 base units
+    assert_eq!(backend.calculate_cost(1000), 10);
+    // 500 chars -> 5
+    assert_eq!(backend.calculate_cost(500), 5);
+    // 0 chars -> 0
+    assert_eq!(backend.calculate_cost(0), 0);
+    // 50000 chars -> 500
+    assert_eq!(backend.calculate_cost(50000), 500);
 }
 
-// --- Billing Tests ---
+#[tokio::test]
+async fn test_billing_charge_capped_at_preauth() {
+    let config = Arc::new(test_config(8000));
+    let engine =
+        Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
+    let backend = VoiceBackend::new(config, engine);
+
+    let actual_cost = backend.calculate_cost(50000); // 500
+    let preauth_amount: u64 = 100;
+    let charge_amount = actual_cost.min(preauth_amount);
+    assert_eq!(
+        charge_amount, 100,
+        "charge must be capped at pre-authorized amount"
+    );
+}
 
 #[tokio::test]
-async fn test_billing_calculate_cost() {
+async fn test_billing_charge_uses_actual_when_below_preauth() {
     let config = Arc::new(test_config(8000));
-    let billing = voice_inference::billing::BillingClient::new(config)
-        .await
-        .unwrap();
+    let engine =
+        Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
+    let backend = VoiceBackend::new(config, engine);
 
-    // price_per_1k_characters = 10
-    // 1000 chars -> 10 base units
-    let cost = billing.calculate_cost(1000);
-    assert_eq!(cost, 10);
+    let actual_cost = backend.calculate_cost(500); // 5
+    let preauth_amount: u64 = 1000;
+    let charge_amount = actual_cost.min(preauth_amount);
+    assert_eq!(
+        charge_amount, 5,
+        "should charge actual cost, not the full pre-auth"
+    );
 }
 
 // --- Handler-level integration tests ---
@@ -222,7 +171,27 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Returns (server_port, _guard) -- caller must hold _guard to keep the server alive.
+async fn build_test_state(config: Arc<OperatorConfig>) -> voice_inference::AppState {
+    let engine =
+        Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
+    let billing = Arc::new(BillingClient::new(&config.tangle, &config.billing).unwrap());
+    let operator_address = billing.operator_address();
+    let nonce_store = Arc::new(NonceStore::load(None));
+    let backend = VoiceBackend::new(config.clone(), engine);
+
+    AppStateBuilder::new()
+        .billing(billing)
+        .nonce_store(nonce_store)
+        .server_config(Arc::new(config.server.clone()))
+        .billing_config(Arc::new(config.billing.clone()))
+        .tangle_config(Arc::new(config.tangle.clone()))
+        .operator_address(operator_address)
+        .max_concurrent(64)
+        .backend(backend)
+        .build()
+        .unwrap()
+}
+
 async fn start_test_server(
     vllm_port: u16,
 ) -> (u16, tokio::sync::watch::Sender<bool>, JoinHandle<()>) {
@@ -232,25 +201,8 @@ async fn start_test_server(
     config.server.host = "127.0.0.1".into();
     let config = Arc::new(config);
 
-    let engine = Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
-    let billing = Arc::new(
-        voice_inference::billing::BillingClient::new(config.clone())
-            .await
-            .unwrap(),
-    );
-    let operator_address = billing.operator_address();
-    let semaphore = Arc::new(Semaphore::new(64));
+    let state = build_test_state(config).await;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    let state = voice_inference::server::AppState {
-        config,
-        engine,
-        billing,
-        semaphore,
-        nonce_store: Arc::new(voice_inference::server::NonceStore::load(None)),
-        active_per_account: Arc::new(RwLock::new(HashMap::new())),
-        operator_address,
-    };
 
     let handle = voice_inference::server::start(state, shutdown_rx)
         .await
@@ -259,7 +211,6 @@ async fn start_test_server(
     (server_port, shutdown_tx, handle)
 }
 
-/// Start a test server with billing_required = true.
 async fn start_billing_required_server(
     vllm_port: u16,
 ) -> (u16, tokio::sync::watch::Sender<bool>, JoinHandle<()>) {
@@ -270,25 +221,8 @@ async fn start_billing_required_server(
     config.billing.billing_required = true;
     let config = Arc::new(config);
 
-    let engine = Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
-    let billing = Arc::new(
-        voice_inference::billing::BillingClient::new(config.clone())
-            .await
-            .unwrap(),
-    );
-    let operator_address = billing.operator_address();
-    let semaphore = Arc::new(Semaphore::new(64));
+    let state = build_test_state(config).await;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    let state = voice_inference::server::AppState {
-        config,
-        engine,
-        billing,
-        semaphore,
-        nonce_store: Arc::new(voice_inference::server::NonceStore::load(None)),
-        active_per_account: Arc::new(RwLock::new(HashMap::new())),
-        operator_address,
-    };
 
     let handle = voice_inference::server::start(state, shutdown_rx)
         .await
@@ -301,8 +235,7 @@ async fn start_billing_required_server(
 async fn test_speech_synthesis_through_handler() {
     let mock_vllm = MockServer::start().await;
 
-    // Mock vLLM-Omni returning audio bytes
-    let audio_bytes = vec![0xFF, 0xFB, 0x90, 0x00]; // fake MP3 header
+    let audio_bytes = vec![0xFF, 0xFB, 0x90, 0x00];
 
     Mock::given(method("POST"))
         .and(path("/v1/audio/speech"))
@@ -318,9 +251,7 @@ async fn test_speech_synthesis_through_handler() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!(
-            "http://127.0.0.1:{server_port}/v1/audio/speech"
-        ))
+        .post(format!("http://127.0.0.1:{server_port}/v1/audio/speech"))
         .json(&serde_json::json!({
             "input": "Hello, world!",
             "voice": "alloy",
@@ -347,7 +278,7 @@ async fn test_speech_synthesis_through_handler() {
 async fn test_speech_synthesis_wav_format() {
     let mock_vllm = MockServer::start().await;
 
-    let audio_bytes = vec![0x52, 0x49, 0x46, 0x46]; // RIFF header
+    let audio_bytes = vec![0x52, 0x49, 0x46, 0x46];
 
     Mock::given(method("POST"))
         .and(path("/v1/audio/speech"))
@@ -363,9 +294,7 @@ async fn test_speech_synthesis_wav_format() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!(
-            "http://127.0.0.1:{server_port}/v1/audio/speech"
-        ))
+        .post(format!("http://127.0.0.1:{server_port}/v1/audio/speech"))
         .json(&serde_json::json!({
             "input": "Hello, world!",
             "response_format": "wav",
@@ -385,75 +314,10 @@ async fn test_speech_synthesis_wav_format() {
     );
 }
 
-// --- Billing Settlement Tests ---
-
-#[tokio::test]
-async fn test_billing_actual_cost_less_than_preauth() {
-    let config = Arc::new(test_config(8000));
-    let billing = voice_inference::billing::BillingClient::new(config)
-        .await
-        .unwrap();
-
-    // price_per_1k_characters = 10
-    // 500 chars -> 500 * 10 / 1000 = 5
-    let actual_cost = billing.calculate_cost(500);
-    assert_eq!(actual_cost, 5);
-
-    // Pre-auth ceiling was 1000 -- charge_amount should be min(5, 1000) = 5
-    let preauth_amount: u64 = 1000;
-    let charge_amount = actual_cost.min(preauth_amount);
-    assert_eq!(
-        charge_amount, 5,
-        "should charge actual cost, not the full pre-auth"
-    );
-}
-
-#[tokio::test]
-async fn test_billing_actual_cost_exceeds_preauth_cap() {
-    let config = Arc::new(test_config(8000));
-    let billing = voice_inference::billing::BillingClient::new(config)
-        .await
-        .unwrap();
-
-    // price_per_1k_characters = 10
-    // 50000 chars -> 50000 * 10 / 1000 = 500
-    let actual_cost = billing.calculate_cost(50000);
-    assert_eq!(actual_cost, 500);
-
-    // Pre-auth ceiling was 100 -- charge_amount should be min(500, 100) = 100
-    let preauth_amount: u64 = 100;
-    let charge_amount = actual_cost.min(preauth_amount);
-    assert_eq!(
-        charge_amount, 100,
-        "charge must be capped at pre-authorized amount"
-    );
-}
-
-#[tokio::test]
-async fn test_billing_zero_usage_yields_zero_charge() {
-    let config = Arc::new(test_config(8000));
-    let billing = voice_inference::billing::BillingClient::new(config)
-        .await
-        .unwrap();
-
-    let actual_cost = billing.calculate_cost(0);
-    assert_eq!(actual_cost, 0);
-
-    let preauth_amount: u64 = 500;
-    let charge_amount = actual_cost.min(preauth_amount);
-    assert_eq!(
-        charge_amount, 0,
-        "zero usage should result in zero charge, not the preauth amount"
-    );
-}
-
-// --- Policy Enforcement Tests ---
-
 #[tokio::test]
 async fn test_billing_required_rejects_missing_spend_auth() {
     let mock_vllm = MockServer::start().await;
 
-    // Set up a mock response (won't be reached because billing check happens first)
     Mock::given(method("POST"))
         .and(path("/v1/audio/speech"))
         .respond_with(
@@ -469,9 +333,7 @@ async fn test_billing_required_rejects_missing_spend_auth() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!(
-            "http://127.0.0.1:{server_port}/v1/audio/speech"
-        ))
+        .post(format!("http://127.0.0.1:{server_port}/v1/audio/speech"))
         .json(&serde_json::json!({
             "input": "Hello, world!",
         }))
@@ -483,30 +345,6 @@ async fn test_billing_required_rejects_missing_spend_auth() {
         resp.status(),
         402,
         "requests without spend_auth should be rejected with 402 when billing_required is true"
-    );
-}
-
-// --- Job Handler Error Path Tests ---
-
-#[tokio::test]
-async fn test_run_tts_returns_error_on_connection_failure() {
-    let client = reqwest::Client::new();
-
-    // Connect to a port where nothing is listening
-    let result = client
-        .post("http://127.0.0.1:1/v1/audio/speech")
-        .json(&serde_json::json!({
-            "model": "default",
-            "input": "test",
-            "voice": "alloy",
-        }))
-        .send()
-        .await;
-
-    // The key assertion: this should be an Err, not a panic.
-    assert!(
-        result.is_err(),
-        "connection to unreachable engine should return Err, not panic"
     );
 }
 
@@ -536,78 +374,27 @@ async fn test_config_debug_redacts_operator_key() {
 // --- Wiremock Integration Tests ---
 
 #[tokio::test]
-async fn test_speech_via_wiremock() {
-    let mock_server = MockServer::start().await;
-
-    let audio_bytes = vec![0xFF, 0xFB, 0x90, 0x00];
-
-    Mock::given(method("POST"))
-        .and(path("/v1/audio/speech"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "audio/mpeg")
-                .set_body_bytes(audio_bytes.clone()),
-        )
-        .mount(&mock_server)
-        .await;
-
-    let port = mock_server.address().port();
-    let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{port}/v1/audio/speech");
-
-    let body = serde_json::json!({
-        "model": "test-model",
-        "input": "Hello, world!",
-        "voice": "alloy",
-        "response_format": "mp3",
-        "speed": 1.0,
-    });
-
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap();
-
-    assert_eq!(
-        resp.headers()
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        "audio/mpeg"
-    );
-
-    let response_bytes = resp.bytes().await.unwrap();
-    assert_eq!(response_bytes.to_vec(), audio_bytes);
-}
-
-#[tokio::test]
 async fn test_upstream_error_returns_error_status() {
-    let mock_server = MockServer::start().await;
+    let mock_vllm = MockServer::start().await;
 
     Mock::given(method("POST"))
         .and(path("/v1/audio/speech"))
         .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
-        .mount(&mock_server)
+        .mount(&mock_vllm)
         .await;
 
-    let port = mock_server.address().port();
-    let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{port}/v1/audio/speech");
+    let (server_port, _shutdown_tx, _handle) = start_test_server(mock_vllm.address().port()).await;
 
+    let client = reqwest::Client::new();
     let resp = client
-        .post(&url)
+        .post(format!("http://127.0.0.1:{server_port}/v1/audio/speech"))
         .json(&serde_json::json!({
-            "model": "test-model",
             "input": "Hello",
         }))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 500);
+    // The backend returned 500; our handler maps upstream errors to 502.
+    assert_eq!(resp.status(), 502);
 }
