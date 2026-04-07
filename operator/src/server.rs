@@ -14,9 +14,9 @@ use blueprint_sdk::std::time::Duration;
 
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Multipart, State},
     http::{header, HeaderMap, StatusCode},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router as HttpRouter,
 };
@@ -28,15 +28,17 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use tangle_inference_core::server::{
-    error_response, extract_x402_spend_auth, payment_required, settle_billing, validate_spend_auth,
+    error_response, extract_x402_spend_auth, payment_required, settle_billing,
+    validate_spend_auth,
 };
 use tangle_inference_core::{
-    detect_gpus, AppState, CostModel, CostParams, GpuInfo, PerCharCostModel, RequestGuard,
-    SpendAuthPayload,
+    detect_gpus, AppState, CostModel, CostParams, GpuInfo, PerCharCostModel, PerSecondCostModel,
+    RequestGuard, SpendAuthPayload,
 };
 
 use crate::config::OperatorConfig;
 use crate::voice_engine::VoiceEngine;
+use crate::whisper::WhisperClient;
 
 /// Backend attached to `AppState` via `AppStateBuilder::backend`. Handlers
 /// retrieve it via `state.backend::<VoiceBackend>().unwrap()`.
@@ -44,6 +46,8 @@ pub struct VoiceBackend {
     pub config: Arc<OperatorConfig>,
     pub engine: Arc<VoiceEngine>,
     pub cost_model: PerCharCostModel,
+    pub whisper: Option<Arc<WhisperClient>>,
+    pub stt_cost_model: Option<PerSecondCostModel>,
 }
 
 impl VoiceBackend {
@@ -51,10 +55,21 @@ impl VoiceBackend {
         let cost_model = PerCharCostModel {
             price_per_1k_chars: config.vllm.price_per_1k_chars,
         };
+        let (whisper, stt_cost_model) = match config.whisper {
+            Some(ref wc) => (
+                Some(Arc::new(WhisperClient::new(wc.clone()))),
+                Some(PerSecondCostModel {
+                    price_per_second: wc.price_per_audio_second,
+                }),
+            ),
+            None => (None, None),
+        };
         Self {
             config,
             engine,
             cost_model,
+            whisper,
+            stt_cost_model,
         }
     }
 
@@ -84,6 +99,7 @@ pub async fn start(
 
     let app = HttpRouter::new()
         .route("/v1/audio/speech", post(speech_handler))
+        .route("/v1/audio/transcriptions", post(transcription_handler))
         .route("/v1/models", get(list_models))
         .route("/v1/operator", get(operator_info))
         .route("/health", get(health_check))
@@ -321,6 +337,152 @@ async fn speech_handler(
                 "response_build_failed",
             )
         })
+}
+
+async fn transcription_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    let backend = backend_from(&state);
+
+    let whisper = match backend.whisper.as_ref() {
+        Some(w) => w,
+        None => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "STT not enabled — whisper not configured".to_string(),
+                "not_found",
+                "stt_disabled",
+            );
+        }
+    };
+
+    let stt_cost_model = backend.stt_cost_model.as_ref().expect("stt_cost_model set when whisper is configured");
+
+    let _permit: OwnedSemaphorePermit = match state.semaphore.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "server at capacity".to_string(),
+                "rate_limit_error",
+                "too_many_requests",
+            );
+        }
+    };
+
+    // Extract fields from multipart form
+    let mut audio_bytes: Option<Vec<u8>> = None;
+    let mut language: Option<String> = None;
+    let mut _model: Option<String> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "file" => {
+                match field.bytes().await {
+                    Ok(b) => audio_bytes = Some(b.to_vec()),
+                    Err(e) => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            format!("failed to read audio file: {e}"),
+                            "invalid_request",
+                            "multipart_read_error",
+                        );
+                    }
+                }
+            }
+            "language" => {
+                if let Ok(t) = field.text().await {
+                    language = Some(t);
+                }
+            }
+            "model" => {
+                if let Ok(t) = field.text().await {
+                    _model = Some(t);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let audio_bytes = match audio_bytes {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "missing or empty 'file' field in multipart form".to_string(),
+                "invalid_request",
+                "missing_file",
+            );
+        }
+    };
+
+    // Estimate duration from file size (rough: 16kHz * 2 bytes/sample * 1 channel = 32000 bytes/s)
+    let estimated_duration_secs = (audio_bytes.len() as u64).max(32000) / 32000;
+    let estimated_centiseconds = estimated_duration_secs * 100;
+    let estimated_cost = stt_cost_model.calculate_cost(&CostParams {
+        extra: HashMap::from([("centiseconds".into(), estimated_centiseconds)]),
+        ..Default::default()
+    });
+
+    // Inline billing gate: extract x402, enforce billing, validate spend_auth
+    let spend_auth_from_header = extract_x402_spend_auth(&headers);
+
+    if state.billing_config.billing_required && spend_auth_from_header.is_none() {
+        return payment_required(
+            &state.billing_config,
+            &state.tangle_config,
+            state.operator_address,
+            estimated_cost,
+        );
+    }
+
+    let (spend_auth, preauth): (Option<SpendAuthPayload>, Option<u64>) =
+        if let Some(ref sa) = spend_auth_from_header {
+            match validate_spend_auth(&state, sa).await {
+                Ok(amt) => (spend_auth_from_header, Some(amt)),
+                Err(resp) => return resp,
+            }
+        } else {
+            (None, None)
+        };
+
+    let mut guard = RequestGuard::new("whisper");
+
+    let result = match whisper.transcribe(&audio_bytes, language.as_deref()).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "whisper transcription failed");
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("upstream STT error: {e}"),
+                "upstream_error",
+                "whisper_error",
+            );
+        }
+    };
+
+    // Settle based on actual audio duration
+    if let Some(ref auth) = spend_auth {
+        let actual_centiseconds = (result.duration * 100.0) as u64;
+        let actual_cost = stt_cost_model.calculate_cost(&CostParams {
+            extra: HashMap::from([("centiseconds".into(), actual_centiseconds)]),
+            ..Default::default()
+        });
+        if let Err(e) = settle_billing(&state.billing, auth, preauth.unwrap_or(0), actual_cost).await {
+            tracing::error!(error = %e, "STT settlement failed");
+        }
+    }
+
+    guard.set_success();
+    Json(serde_json::json!({
+        "text": result.text,
+        "language": result.language,
+        "duration": result.duration,
+    }))
+    .into_response()
 }
 
 async fn list_models(State(state): State<AppState>) -> Json<ModelList> {

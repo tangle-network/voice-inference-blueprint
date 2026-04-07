@@ -1,6 +1,7 @@
 pub mod config;
 pub mod server;
 pub mod voice_engine;
+pub mod whisper;
 
 // Re-export shared infrastructure so downstream crates can `use voice_inference::*`.
 pub use tangle_inference_core::server::{

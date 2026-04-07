@@ -27,9 +27,29 @@ pub struct OperatorConfig {
     /// GPU configuration (shared).
     pub gpu: GpuConfig,
 
+    /// Whisper STT configuration (optional — omit to disable STT).
+    #[serde(default)]
+    pub whisper: Option<WhisperConfig>,
+
     /// RLN Mode configuration (optional — enables RLN payment path).
     #[serde(default)]
     pub rln: Option<RLNConfig>,
+}
+
+/// Whisper STT configuration. Omit entirely to disable STT.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhisperConfig {
+    /// HuggingFace model ID (e.g. "openai/whisper-large-v3" or "distil-whisper/distil-large-v3").
+    pub model: String,
+
+    /// "subprocess" (spawn insanely-fast-whisper per request) or "server" (HTTP endpoint).
+    pub mode: String,
+
+    /// Whisper HTTP endpoint URL (required for server mode).
+    pub endpoint: Option<String>,
+
+    /// Price per audio second in base token units.
+    pub price_per_audio_second: u64,
 }
 
 /// vLLM-Omni subprocess + pricing config. This is the only truly voice-specific
