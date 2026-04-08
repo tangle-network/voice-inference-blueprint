@@ -1,5 +1,6 @@
 pub mod config;
 pub mod server;
+pub mod stt_engine;
 pub mod voice_engine;
 pub mod whisper;
 

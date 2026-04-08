@@ -32,5 +32,13 @@
     "expected_gpu_count": 1,
     "min_vram_mib": 16000,
     "monitor_interval_secs": 30
+  },
+  "stt": {
+    "backend": "faster-whisper",
+    "model": "Systran/faster-whisper-large-v3",
+    "mode": "server",
+    "endpoint": "http://localhost:9000",
+    "price_per_audio_second": 5,
+    "language": "en"
   }
 }

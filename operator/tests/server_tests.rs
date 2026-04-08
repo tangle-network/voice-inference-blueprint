@@ -65,6 +65,7 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             monitor_interval_secs: 30,
             gpu_model: None,
         },
+        stt: None,
         whisper: None,
         rln: None,
     }

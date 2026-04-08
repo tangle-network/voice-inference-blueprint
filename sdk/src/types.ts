@@ -85,6 +85,34 @@ export interface VoiceClientConfig {
   spendingKeyPrivate: string
 }
 
+/** STT provider info */
+export interface SttProvider {
+  backend: string
+  model: string
+  mode: string
+  language: string
+}
+
+/** STT provider listing */
+export interface SttProviderList {
+  providers: SttProvider[]
+}
+
+/** Transcription result */
+export interface TranscriptionResult {
+  text: string
+  language: string
+  duration: number
+}
+
+/** Options for a transcription request */
+export interface TranscribeOptions {
+  /** Language hint (e.g. "en", "es") */
+  language?: string
+  /** Model override */
+  model?: string
+}
+
 /** Error response from operator */
 export interface ErrorResponse {
   error: {

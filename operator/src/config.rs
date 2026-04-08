@@ -27,7 +27,11 @@ pub struct OperatorConfig {
     /// GPU configuration (shared).
     pub gpu: GpuConfig,
 
-    /// Whisper STT configuration (optional — omit to disable STT).
+    /// STT configuration (preferred — supports all backends).
+    #[serde(default)]
+    pub stt: Option<SttConfig>,
+
+    /// Legacy Whisper STT configuration (backward compat — maps to SttConfig internally).
     #[serde(default)]
     pub whisper: Option<WhisperConfig>,
 
@@ -36,7 +40,40 @@ pub struct OperatorConfig {
     pub rln: Option<RLNConfig>,
 }
 
-/// Whisper STT configuration. Omit entirely to disable STT.
+/// STT configuration — supports multiple open-source backends.
+///
+/// Backends: "whisper", "faster-whisper", "parakeet", "sensevoice", "moonshine".
+/// - "whisper" supports subprocess mode (insanely-fast-whisper) and server mode.
+/// - All others require server mode with an HTTP endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SttConfig {
+    /// Which backend: "faster-whisper", "parakeet", "sensevoice", "moonshine", "whisper".
+    pub backend: String,
+
+    /// Model ID (e.g. "Systran/faster-whisper-large-v3", "nvidia/parakeet-tdt-0.6b",
+    /// "FunAudioLLM/SenseVoiceSmall", "moonshine/base").
+    pub model: String,
+
+    /// "subprocess" (whisper only) or "server" (HTTP endpoint).
+    pub mode: String,
+
+    /// HTTP endpoint URL (required for server mode).
+    pub endpoint: Option<String>,
+
+    /// Price per audio second in base token units.
+    pub price_per_audio_second: u64,
+
+    /// Optional language hint (default: "en").
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    "en".to_string()
+}
+
+/// Legacy Whisper STT configuration. Omit entirely to disable STT.
+/// Prefer the `[stt]` section for new deployments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhisperConfig {
     /// HuggingFace model ID (e.g. "openai/whisper-large-v3" or "distil-whisper/distil-large-v3").
@@ -137,6 +174,20 @@ fn default_supported_formats() -> Vec<String> {
 }
 
 impl OperatorConfig {
+    /// Resolve STT config: prefer `stt` section, fall back to legacy `whisper`.
+    pub fn resolve_stt(&self) -> Option<SttConfig> {
+        self.stt.clone().or_else(|| {
+            self.whisper.as_ref().map(|w| SttConfig {
+                backend: "whisper".to_string(),
+                model: w.model.clone(),
+                mode: w.mode.clone(),
+                endpoint: w.endpoint.clone(),
+                price_per_audio_second: w.price_per_audio_second,
+                language: "en".to_string(),
+            })
+        })
+    }
+
     /// Load config from file, env vars, and CLI overrides.
     pub fn load(path: Option<&str>) -> anyhow::Result<Self> {
         let mut builder = config::Config::builder();

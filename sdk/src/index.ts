@@ -5,6 +5,10 @@ import type {
   SpendAuth,
   ModelList,
   ErrorResponse,
+  SttProvider,
+  SttProviderList,
+  TranscriptionResult,
+  TranscribeOptions,
 } from "./types";
 
 export * from "./types";
@@ -191,9 +195,66 @@ export function createVoiceClient(config: VoiceClientConfig) {
     currentNonce = nonce;
   }
 
+  /**
+   * List available STT providers from the operator.
+   */
+  async function listSttProviders(): Promise<SttProvider[]> {
+    const response = await fetch(`${config.operatorUrl}/v1/stt/providers`);
+    if (!response.ok) {
+      throw new Error(`Failed to list STT providers: ${response.statusText}`);
+    }
+    const data: SttProviderList = await response.json();
+    return data.providers;
+  }
+
+  /**
+   * Transcribe audio using the operator's configured STT backend.
+   * Accepts a Blob (browser) or Buffer (Node.js).
+   */
+  async function transcribe(
+    audio: Blob | Buffer,
+    options: TranscribeOptions = {}
+  ): Promise<TranscriptionResult> {
+    const formData = new FormData();
+
+    if (audio instanceof Blob) {
+      formData.append("file", audio, "audio.wav");
+    } else {
+      // Node.js Buffer — wrap in a Blob
+      const blob = new Blob([audio], { type: "audio/wav" });
+      formData.append("file", blob, "audio.wav");
+    }
+
+    if (options.language) {
+      formData.append("language", options.language);
+    }
+    if (options.model) {
+      formData.append("model", options.model);
+    }
+
+    const response = await fetch(
+      `${config.operatorUrl}/v1/audio/transcriptions`,
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+
+    if (!response.ok) {
+      const error: ErrorResponse = await response.json();
+      throw new Error(
+        `Transcription failed (${response.status}): ${error.error?.message ?? response.statusText}`
+      );
+    }
+
+    return response.json();
+  }
+
   return {
     synthesize,
+    transcribe,
     listModels,
+    listSttProviders,
     healthCheck,
     signSpendAuth,
     estimateCost,

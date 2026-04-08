@@ -37,8 +37,8 @@ use tangle_inference_core::{
 };
 
 use crate::config::OperatorConfig;
+use crate::stt_engine::SttEngine;
 use crate::voice_engine::VoiceEngine;
-use crate::whisper::WhisperClient;
 
 /// Backend attached to `AppState` via `AppStateBuilder::backend`. Handlers
 /// retrieve it via `state.backend::<VoiceBackend>().unwrap()`.
@@ -46,7 +46,7 @@ pub struct VoiceBackend {
     pub config: Arc<OperatorConfig>,
     pub engine: Arc<VoiceEngine>,
     pub cost_model: PerCharCostModel,
-    pub whisper: Option<Arc<WhisperClient>>,
+    pub stt_engine: Option<Arc<SttEngine>>,
     pub stt_cost_model: Option<PerSecondCostModel>,
 }
 
@@ -55,20 +55,24 @@ impl VoiceBackend {
         let cost_model = PerCharCostModel {
             price_per_1k_chars: config.vllm.price_per_1k_chars,
         };
-        let (whisper, stt_cost_model) = match config.whisper {
-            Some(ref wc) => (
-                Some(Arc::new(WhisperClient::new(wc.clone()))),
-                Some(PerSecondCostModel {
-                    price_per_second: wc.price_per_audio_second,
-                }),
-            ),
+        let (stt_engine, stt_cost_model) = match config.resolve_stt() {
+            Some(ref stt_cfg) => {
+                let engine = SttEngine::from_config(stt_cfg)
+                    .expect("invalid STT config");
+                (
+                    Some(Arc::new(engine)),
+                    Some(PerSecondCostModel {
+                        price_per_second: stt_cfg.price_per_audio_second,
+                    }),
+                )
+            }
             None => (None, None),
         };
         Self {
             config,
             engine,
             cost_model,
-            whisper,
+            stt_engine,
             stt_cost_model,
         }
     }
@@ -100,6 +104,7 @@ pub async fn start(
     let app = HttpRouter::new()
         .route("/v1/audio/speech", post(speech_handler))
         .route("/v1/audio/transcriptions", post(transcription_handler))
+        .route("/v1/stt/providers", get(stt_providers_handler))
         .route("/v1/models", get(list_models))
         .route("/v1/operator", get(operator_info))
         .route("/health", get(health_check))
@@ -346,19 +351,19 @@ async fn transcription_handler(
 ) -> Response {
     let backend = backend_from(&state);
 
-    let whisper = match backend.whisper.as_ref() {
-        Some(w) => w,
+    let stt = match backend.stt_engine.as_ref() {
+        Some(e) => e,
         None => {
             return error_response(
                 StatusCode::NOT_FOUND,
-                "STT not enabled — whisper not configured".to_string(),
+                "STT not enabled — no stt/whisper configured".to_string(),
                 "not_found",
                 "stt_disabled",
             );
         }
     };
 
-    let stt_cost_model = backend.stt_cost_model.as_ref().expect("stt_cost_model set when whisper is configured");
+    let stt_cost_model = backend.stt_cost_model.as_ref().expect("stt_cost_model set when stt_engine is configured");
 
     let _permit: OwnedSemaphorePermit = match state.semaphore.clone().try_acquire_owned() {
         Ok(p) => p,
@@ -449,17 +454,20 @@ async fn transcription_handler(
             (None, None)
         };
 
-    let mut guard = RequestGuard::new("whisper");
+    let stt_backend_name = backend.config.resolve_stt()
+        .map(|c| c.backend.clone())
+        .unwrap_or_else(|| "stt".to_string());
+    let mut guard = RequestGuard::new(&stt_backend_name);
 
-    let result = match whisper.transcribe(&audio_bytes, language.as_deref()).await {
+    let result = match stt.transcribe(&audio_bytes, language.as_deref()).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(error = %e, "whisper transcription failed");
+            tracing::error!(error = %e, backend = %stt_backend_name, "STT transcription failed");
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 format!("upstream STT error: {e}"),
                 "upstream_error",
-                "whisper_error",
+                "stt_error",
             );
         }
     };
@@ -483,6 +491,26 @@ async fn transcription_handler(
         "duration": result.duration,
     }))
     .into_response()
+}
+
+async fn stt_providers_handler(State(state): State<AppState>) -> Response {
+    let backend = backend_from(&state);
+    let providers = match &backend.stt_engine {
+        Some(_) => {
+            if let Some(config) = backend.config.resolve_stt() {
+                vec![serde_json::json!({
+                    "backend": config.backend,
+                    "model": config.model,
+                    "mode": config.mode,
+                    "language": config.language,
+                })]
+            } else {
+                vec![]
+            }
+        }
+        None => vec![],
+    };
+    Json(serde_json::json!({ "providers": providers })).into_response()
 }
 
 async fn list_models(State(state): State<AppState>) -> Json<ModelList> {
