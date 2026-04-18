@@ -1,0 +1,24 @@
+{
+  "name": "voice-inference",
+  "description": "Voice synthesis and transcription operator (TTS/STT) via Tangle",
+  "version": "0.1.0",
+  "manager": {
+    "Evm": "VoiceBSM"
+  },
+  "master_revision": "Latest",
+  "jobs": [
+    {
+      "name": "tts",
+      "job_index": 0,
+      "description": "Text-to-speech synthesis (input text → audio bytes)",
+      "inputs": [
+        "(string,string,string)"
+      ],
+      "outputs": [
+        "(bytes,uint32,string)"
+      ],
+      "required_results": 1,
+      "execution": "local"
+    }
+  ]
+}

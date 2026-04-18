@@ -253,7 +253,7 @@ async fn speech_handler(
         // 5a. Per-account concurrency limit.
         let max_per_account = state.server_config.max_per_account_requests;
         if max_per_account > 0 {
-            let mut map = state.active_per_account.write().await;
+            let mut map = state.active_per_account.lock().unwrap_or_else(|e| e.into_inner());
             let count = map.entry(spend_auth.commitment.clone()).or_insert(0);
             if *count >= max_per_account {
                 return error_response(
