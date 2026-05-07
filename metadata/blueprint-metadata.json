@@ -1,0 +1,251 @@
+{
+  "name": "Voice Inference Blueprint",
+  "description": "Voice synthesis and transcription operator for Tangle, serving TTS/STT workloads with shielded billing and OpenAI-compatible APIs.",
+  "author": "Tangle Network",
+  "category": "AI Inference",
+  "image": null,
+  "website": "https://tangle.tools",
+  "codeRepository": "https://github.com/tangle-network/voice-inference-blueprint",
+  "docs": "https://github.com/tangle-network/voice-inference-blueprint#readme",
+  "integrity": null,
+  "blueprintUi": {
+    "displayName": "Voice Inference",
+    "description": "Provision TTS/STT services, submit synthesis jobs, and monitor audio generation latency, spend authorization, and model health.",
+    "requestedSlug": "voice-inference",
+    "publisher": {
+      "name": "Tangle Network",
+      "namespace": "tangle",
+      "verified": false
+    },
+    "resources": {
+      "serviceLabel": "Voice service",
+      "itemLabel": "Audio job",
+      "itemRoute": "runs"
+    },
+    "surfaces": [
+      "generic-overview",
+      "service-explorer",
+      "service-console",
+      "actions-panel",
+      "resources",
+      "metrics"
+    ],
+    "theme": {
+      "badgeLabel": "TTS/STT inference",
+      "accentColor": "#DB2777",
+      "secondaryColor": "#500724",
+      "icon": "spark"
+    },
+    "overviewCards": [
+      {
+        "id": "dual-modality",
+        "kind": "callout",
+        "title": "TTS + STT dual support",
+        "description": "Text-to-speech via /v1/audio/speech and speech-to-text transcription. Both paths accept x402 spend auth for anonymous usage metering.",
+        "tone": "success"
+      },
+      {
+        "id": "voice-profiles",
+        "kind": "checklist",
+        "title": "Audio capabilities",
+        "items": [
+          "Configurable voice profiles (alloy, echo, etc.)",
+          "Multiple output formats (MP3, WAV, Opus)",
+          "Character-based billing for TTS",
+          "Per-second billing for STT (optional)"
+        ],
+        "tone": "info"
+      },
+      {
+        "id": "audio-stats",
+        "kind": "stat",
+        "title": "Audio generation",
+        "description": "Total seconds of audio synthesized across all requests.",
+        "value": "auto",
+        "tone": "neutral"
+      }
+    ],
+    "actions": [
+      {
+        "id": "run-tts",
+        "label": "Synthesize speech",
+        "description": "Submit text for speech synthesis via the on-chain Tangle TTS job path. Output is verifiable with character count accounting.",
+        "target": "service",
+        "submitLabel": "Synthesize",
+        "fields": [
+          {
+            "key": "input",
+            "label": "Text to synthesize",
+            "input": "textarea",
+            "required": true,
+            "placeholder": "Welcome to Tangle Network."
+          },
+          {
+            "key": "voice",
+            "label": "Voice profile",
+            "input": "select",
+            "required": false,
+            "options": [
+              {
+                "label": "Alloy",
+                "value": "alloy"
+              },
+              {
+                "label": "Echo",
+                "value": "echo"
+              },
+              {
+                "label": "Fable",
+                "value": "fable"
+              },
+              {
+                "label": "Onyx",
+                "value": "onyx"
+              },
+              {
+                "label": "Nova",
+                "value": "nova"
+              },
+              {
+                "label": "Shimmer",
+                "value": "shimmer"
+              }
+            ]
+          },
+          {
+            "key": "response_format",
+            "label": "Audio format",
+            "input": "select",
+            "required": true,
+            "options": [
+              {
+                "label": "MP3",
+                "value": "mp3"
+              },
+              {
+                "label": "WAV",
+                "value": "wav"
+              },
+              {
+                "label": "Opus",
+                "value": "opus"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "provision-voice-service",
+        "label": "Provision voice service",
+        "description": "Deploy a TTS/STT service with model, default voice profile, optional STT engine, and per-character or per-second billing.",
+        "target": "service",
+        "submitLabel": "Deploy",
+        "fields": [
+          {
+            "key": "model_id",
+            "label": "Voice model",
+            "input": "text",
+            "required": true,
+            "placeholder": "Qwen/Qwen3-TTS"
+          },
+          {
+            "key": "default_voice",
+            "label": "Default voice",
+            "input": "select",
+            "required": false,
+            "options": [
+              {
+                "label": "Alloy",
+                "value": "alloy"
+              },
+              {
+                "label": "Echo",
+                "value": "echo"
+              },
+              {
+                "label": "Fable",
+                "value": "fable"
+              },
+              {
+                "label": "Onyx",
+                "value": "onyx"
+              },
+              {
+                "label": "Nova",
+                "value": "nova"
+              },
+              {
+                "label": "Shimmer",
+                "value": "shimmer"
+              }
+            ]
+          },
+          {
+            "key": "enable_stt",
+            "label": "Enable STT engine",
+            "input": "toggle",
+            "required": false
+          }
+        ]
+      }
+    ],
+    "resourceViews": [
+      {
+        "id": "audio-jobs",
+        "title": "Audio jobs",
+        "kind": "table",
+        "target": "resource",
+        "defaultSort": "updated_at:desc",
+        "columns": [
+          {
+            "key": "job_id",
+            "label": "Job",
+            "emphasis": true
+          },
+          {
+            "key": "voice",
+            "label": "Voice"
+          },
+          {
+            "key": "duration",
+            "label": "Duration"
+          },
+          {
+            "key": "status",
+            "label": "Status"
+          }
+        ]
+      }
+    ],
+    "modules": [
+      {
+        "module": "metrics-overview",
+        "slot": "overview",
+        "metricKeys": [
+          "audio_seconds_generated",
+          "latency_p95",
+          "success_rate"
+        ]
+      },
+      {
+        "module": "service-health",
+        "slot": "sidebar",
+        "metricKeys": [
+          "voice_engine_ready",
+          "model_loaded",
+          "spend_auth_ready"
+        ]
+      },
+      {
+        "module": "resource-events",
+        "slot": "resources",
+        "eventKinds": [
+          "tts_requested",
+          "audio_generated",
+          "stt_completed",
+          "spend_authorized"
+        ]
+      }
+    ]
+  }
+}
