@@ -1,74 +1,89 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# Register the vLLM inference blueprint on Tangle.
+# Register the voice-inference blueprint on Tangle.
+#
+# Two-stage flow:
+#   1. forge create InferenceBSM (constructor arg: payment token address)
+#   2. cargo tangle blueprint deploy tangle — registers the blueprint via the
+#      definition file at `deploy/definition.json` with the freshly-deployed
+#      BSM address patched in.
 #
 # Prerequisites:
-#   - forge installed
-#   - Contracts deployed (InferenceBSM address known)
-#   - Operator wallet funded with TNT for gas + bond
+#   - forge (Foundry) installed
+#   - cargo-tangle CLI installed (`cargo install cargo-tangle`)
+#   - jq installed
+#   - Deployer wallet funded on the target network
+#   - Keystore with the deployer key at ./keystore (or set KEYSTORE_PATH)
 #
-# Usage:
-#   export RPC_URL=https://rpc.tangle.tools
+# Usage (Base Sepolia, against the deployed Tangle protocol):
+#
 #   export PRIVATE_KEY=0x...
-#   export TANGLE_CORE=0x...
-#   export BSM_ADDRESS=0x...
-#   ./register-blueprint.sh
+#   export RPC_URL=https://sepolia.base.org
+#   export WS_URL=wss://base-sepolia-rpc.publicnode.com
+#   export TANGLE_CORE=0xC9b0716a187072be0f38A5D972392C6479b9Cfe3
+#   export TSUSD_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e  # USDC sepolia
+#   export KEYSTORE_PATH=./keystore
+#   ./deploy/register-blueprint.sh
+#
+# Optional:
+#   BSM_ADDRESS  — skip the forge create step if the BSM is already deployed
+#                   (definition.json gets patched with this address instead)
+
+set -euo pipefail
 
 : "${RPC_URL:?Set RPC_URL}"
 : "${PRIVATE_KEY:?Set PRIVATE_KEY}"
 : "${TANGLE_CORE:?Set TANGLE_CORE}"
-: "${BSM_ADDRESS:?Set BSM_ADDRESS}"
+: "${WS_URL:?Set WS_URL (ws://… or wss://…)}"
+: "${KEYSTORE_PATH:=./keystore}"
 
-MODEL="${MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
-GPU_COUNT="${GPU_COUNT:-1}"
-TOTAL_VRAM="${TOTAL_VRAM:-48000}"
-GPU_MODEL="${GPU_MODEL:-NVIDIA A100}"
-ENDPOINT="${ENDPOINT:-https://your-operator.example.com}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEFINITION_FILE="$REPO_ROOT/deploy/definition.json"
 
-echo "=== vLLM Inference Blueprint Registration ==="
+echo "=== Voice-Inference Blueprint Registration ==="
 echo "Network:     $(cast chain-id --rpc-url "$RPC_URL")"
+echo "Deployer:    $(cast wallet address --private-key "$PRIVATE_KEY")"
 echo "Tangle Core: $TANGLE_CORE"
-echo "BSM:         $BSM_ADDRESS"
-echo "Model:       $MODEL"
-echo "GPUs:        $GPU_COUNT x $GPU_MODEL ($TOTAL_VRAM MiB)"
-echo "Endpoint:    $ENDPOINT"
+echo "Definition:  $DEFINITION_FILE"
 echo ""
 
-# Step 1: Deploy the InferenceBSM if not already deployed
-if [ "$BSM_ADDRESS" = "deploy" ]; then
-    echo "Deploying InferenceBSM..."
+# Stage 1 — Deploy the InferenceBSM if no address was supplied. Voice's BSM
+# is a non-upgradeable contract that takes a payment token as its constructor
+# argument (the tsUSD wrapper used by the shielded billing flow).
+if [ -z "${BSM_ADDRESS:-}" ]; then
+    : "${TSUSD_ADDRESS:?Set TSUSD_ADDRESS (payment token) when BSM_ADDRESS is not supplied}"
 
-    TSUSD_ADDRESS="${TSUSD_ADDRESS:?Set TSUSD_ADDRESS for deployment}"
-
+    echo "Stage 1: deploying InferenceBSM with tsUSD=$TSUSD_ADDRESS …"
     BSM_ADDRESS=$(forge create \
         --rpc-url "$RPC_URL" \
         --private-key "$PRIVATE_KEY" \
-        contracts/src/InferenceBSM.sol:InferenceBSM \
+        --broadcast \
+        "$REPO_ROOT/contracts/src/InferenceBSM.sol:InferenceBSM" \
         --constructor-args "$TSUSD_ADDRESS" \
         --json | jq -r '.deployedTo')
-
     echo "InferenceBSM deployed at: $BSM_ADDRESS"
+else
+    echo "Stage 1 skipped — reusing existing BSM at $BSM_ADDRESS"
 fi
-
-# Step 2: Encode registration inputs
-# abi.encode(string model, uint32 gpuCount, uint32 totalVramMib, string gpuModel, string endpoint)
-REG_INPUTS=$(cast abi-encode \
-    "f(string,uint32,uint32,string,string)" \
-    "$MODEL" "$GPU_COUNT" "$TOTAL_VRAM" "$GPU_MODEL" "$ENDPOINT")
-
-echo "Registration inputs: $REG_INPUTS"
-
-# Step 3: Register operator on Tangle Core
-# This calls Tangle.registerOperator(blueprintId, registrationInputs)
-# which internally calls bsm.onRegister(operator, registrationInputs)
 echo ""
-echo "Registering operator..."
-echo "NOTE: Use tangle-cli or the Tangle dApp to complete registration."
-echo "      The registration inputs to provide: $REG_INPUTS"
-echo ""
-echo "Manual cast command:"
-echo "  cast send $TANGLE_CORE 'registerOperator(uint64,bytes)' <BLUEPRINT_ID> $REG_INPUTS --rpc-url $RPC_URL --private-key $PRIVATE_KEY"
+
+# Stage 2 — Patch deploy/definition.json with the BSM address and call
+# cargo-tangle's canonical deploy flow. The patched file is written to a
+# temp path so the in-tree file stays untouched (its `manager: 0x0…0` is
+# the template).
+PATCHED_DEFINITION=$(mktemp --suffix=-voice-blueprint.json)
+trap 'rm -f "$PATCHED_DEFINITION"' EXIT
+jq --arg mgr "$BSM_ADDRESS" '.manager = $mgr' "$DEFINITION_FILE" > "$PATCHED_DEFINITION"
+
+echo "Stage 2: cargo tangle blueprint deploy tangle …"
+cargo tangle blueprint deploy tangle \
+    --network testnet \
+    --definition "$PATCHED_DEFINITION" \
+    --http-rpc-url "$RPC_URL" \
+    --ws-rpc-url "$WS_URL" \
+    --tangle-contract "$TANGLE_CORE" \
+    --keystore-path "$KEYSTORE_PATH"
 
 echo ""
-echo "Registration data prepared. Complete via Tangle UI or CLI."
+echo "=== Blueprint registered ==="
+echo "InferenceBSM: $BSM_ADDRESS"
+echo "(blueprint ID is logged by cargo-tangle above)"
