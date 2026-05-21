@@ -53,13 +53,22 @@ if [ -z "${BSM_ADDRESS:-}" ]; then
     : "${TSUSD_ADDRESS:?Set TSUSD_ADDRESS (payment token) when BSM_ADDRESS is not supplied}"
 
     echo "Stage 1: deploying InferenceBSM with tsUSD=$TSUSD_ADDRESS …"
+    # NOTE: `forge create --json` interleaves compile progress on stdout, so the
+    # output is not strictly parseable JSON. Grep the address out of the
+    # human-readable line instead — robust to leading compile chatter.
     BSM_ADDRESS=$(forge create \
         --rpc-url "$RPC_URL" \
         --private-key "$PRIVATE_KEY" \
         --broadcast \
         "$REPO_ROOT/contracts/src/InferenceBSM.sol:InferenceBSM" \
-        --constructor-args "$TSUSD_ADDRESS" \
-        --json | jq -r '.deployedTo')
+        --constructor-args "$TSUSD_ADDRESS" 2>&1 \
+        | grep -oE 'Deployed to: 0x[a-fA-F0-9]{40}' \
+        | tail -1 \
+        | awk '{print $3}')
+    if ! echo "$BSM_ADDRESS" | grep -qE '^0x[a-fA-F0-9]{40}$'; then
+        echo "failed to extract BSM addr from forge create output" >&2
+        exit 1
+    fi
     echo "InferenceBSM deployed at: $BSM_ADDRESS"
 else
     echo "Stage 1 skipped — reusing existing BSM at $BSM_ADDRESS"
