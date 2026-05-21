@@ -90,6 +90,7 @@ interface IBlueprintServiceManager {
     ) external;
 
     function getMinOperatorStake() external view returns (bool useDefault, uint256 minStake);
+    function forceRemoveAllowsBelowMin(uint64 serviceId) external view returns (bool ok);
 }
 
 /// @title InferenceBSM
@@ -449,6 +450,22 @@ contract InferenceBSM is IBlueprintServiceManager {
 
     function getNonPaymentTerminationPolicy(uint64) external pure returns (bool, uint64) {
         return (true, 0);
+    }
+
+    /// @notice Whether `forceRemoveOperator` may drop the service below `minOperators`.
+    /// @dev Returns false to enforce the protocol-level floor on emergency eviction.
+    ///      Override only if this blueprint genuinely needs below-min eviction.
+    ///
+    ///      Added in tnt-core v0.13.0 (PR #125): the protocol now consults this hook
+    ///      from `forceRemoveOperator` so custom BSMs can opt-in to bypassing the
+    ///      `minOperators` floor on emergency eviction. The default in
+    ///      `BlueprintServiceManagerBase` is `false`, which preserves the historical
+    ///      invariant that a service cannot be eviscerated below its minimum operator
+    ///      count even via the force path. Because this BSM declares
+    ///      `IBlueprintServiceManager` inline rather than inheriting the base, we must
+    ///      provide the implementation explicitly.
+    function forceRemoveAllowsBelowMin(uint64) external pure returns (bool) {
+        return false;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
