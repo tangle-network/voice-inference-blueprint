@@ -221,7 +221,9 @@ export function createVoiceClient(config: VoiceClientConfig) {
       formData.append("file", audio, "audio.wav");
     } else {
       // Node.js Buffer — wrap in a Blob
-      const blob = new Blob([audio], { type: "audio/wav" });
+      const bytes = new Uint8Array(audio.byteLength);
+      bytes.set(audio);
+      const blob = new Blob([bytes.buffer], { type: "audio/wav" });
       formData.append("file", blob, "audio.wav");
     }
 

@@ -28,8 +28,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use tangle_inference_core::server::{
-    error_response, extract_x402_spend_auth, payment_required, settle_billing,
-    validate_spend_auth,
+    error_response, extract_x402_spend_auth, payment_required, settle_billing, validate_spend_auth,
 };
 use tangle_inference_core::{
     detect_gpus, AppState, CostModel, CostParams, GpuInfo, PerCharCostModel, PerSecondCostModel,
@@ -57,8 +56,7 @@ impl VoiceBackend {
         };
         let (stt_engine, stt_cost_model) = match config.resolve_stt() {
             Some(ref stt_cfg) => {
-                let engine = SttEngine::from_config(stt_cfg)
-                    .expect("invalid STT config");
+                let engine = SttEngine::from_config(stt_cfg).expect("invalid STT config");
                 (
                     Some(Arc::new(engine)),
                     Some(PerSecondCostModel {
@@ -253,7 +251,10 @@ async fn speech_handler(
         // 5a. Per-account concurrency limit.
         let max_per_account = state.server_config.max_per_account_requests;
         if max_per_account > 0 {
-            let mut map = state.active_per_account.lock().unwrap_or_else(|e| e.into_inner());
+            let mut map = state
+                .active_per_account
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let count = map.entry(spend_auth.commitment.clone()).or_insert(0);
             if *count >= max_per_account {
                 return error_response(
@@ -363,7 +364,10 @@ async fn transcription_handler(
         }
     };
 
-    let stt_cost_model = backend.stt_cost_model.as_ref().expect("stt_cost_model set when stt_engine is configured");
+    let stt_cost_model = backend
+        .stt_cost_model
+        .as_ref()
+        .expect("stt_cost_model set when stt_engine is configured");
 
     let _permit: OwnedSemaphorePermit = match state.semaphore.clone().try_acquire_owned() {
         Ok(p) => p,
@@ -385,19 +389,17 @@ async fn transcription_handler(
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
-            "file" => {
-                match field.bytes().await {
-                    Ok(b) => audio_bytes = Some(b.to_vec()),
-                    Err(e) => {
-                        return error_response(
-                            StatusCode::BAD_REQUEST,
-                            format!("failed to read audio file: {e}"),
-                            "invalid_request",
-                            "multipart_read_error",
-                        );
-                    }
+            "file" => match field.bytes().await {
+                Ok(b) => audio_bytes = Some(b.to_vec()),
+                Err(e) => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!("failed to read audio file: {e}"),
+                        "invalid_request",
+                        "multipart_read_error",
+                    );
                 }
-            }
+            },
             "language" => {
                 if let Ok(t) = field.text().await {
                     language = Some(t);
@@ -454,7 +456,9 @@ async fn transcription_handler(
             (None, None)
         };
 
-    let stt_backend_name = backend.config.resolve_stt()
+    let stt_backend_name = backend
+        .config
+        .resolve_stt()
         .map(|c| c.backend.clone())
         .unwrap_or_else(|| "stt".to_string());
     let mut guard = RequestGuard::new(&stt_backend_name);
@@ -479,7 +483,9 @@ async fn transcription_handler(
             extra: HashMap::from([("centiseconds".into(), actual_centiseconds)]),
             ..Default::default()
         });
-        if let Err(e) = settle_billing(&state.billing, auth, preauth.unwrap_or(0), actual_cost).await {
+        if let Err(e) =
+            settle_billing(&state.billing, auth, preauth.unwrap_or(0), actual_cost).await
+        {
             tracing::error!(error = %e, "STT settlement failed");
         }
     }

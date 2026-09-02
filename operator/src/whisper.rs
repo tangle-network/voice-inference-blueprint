@@ -89,7 +89,10 @@ impl WhisperClient {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("insanely-fast-whisper failed (exit {}): {stderr}", output.status);
+            anyhow::bail!(
+                "insanely-fast-whisper failed (exit {}): {stderr}",
+                output.status
+            );
         }
 
         let raw = tokio::fs::read_to_string(&output_path).await?;
