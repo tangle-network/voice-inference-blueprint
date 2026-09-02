@@ -86,10 +86,7 @@ impl SttEngine {
                 model,
                 http,
             } => {
-                let url = format!(
-                    "{}/v1/audio/transcriptions",
-                    endpoint.trim_end_matches('/')
-                );
+                let url = format!("{}/v1/audio/transcriptions", endpoint.trim_end_matches('/'));
 
                 let file_part = reqwest::multipart::Part::bytes(audio_bytes.to_vec())
                     .file_name("audio.wav")
@@ -114,11 +111,7 @@ impl SttEngine {
                 // Accept both the OpenAI-compatible format (text, language, duration)
                 // and a simpler JSON format (text, language, duration_s).
                 let result: serde_json::Value = resp.json().await?;
-                let text = result["text"]
-                    .as_str()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
+                let text = result["text"].as_str().unwrap_or("").trim().to_string();
                 let lang = result["language"]
                     .as_str()
                     .unwrap_or(language.unwrap_or("en"))

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use tangle_inference_core::PaymentRails;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
-use tangle_inference_core::PaymentRails;
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
