@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/tangle-network/voice-inference-blueprint"
 
 [workspace.dependencies]
-blueprint-sdk = { version = "0.2.0-alpha.5", features = ["std", "tangle", "macros"] }
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", rev = "be8bd303260d3b1e1df6624eeac92b3ce1f40c38", package = "blueprint-sdk", features = ["std", "tangle", "macros"] }
 alloy = { version = "1", features = ["full", "signer-local", "provider-http"] }
 alloy-sol-types = "1"
 tokio = { version = "1", features = ["full"] }
@@ -22,12 +22,5 @@ anyhow = "1"
 thiserror = "2"
 hex = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
-prometheus = "0.13"
 futures-util = "0.3"
 tokio-stream = "0.1"
-
-# Point blueprint-sdk deps at local checkout (has pre-yank core2 resolved)
-# core2 was entirely yanked from crates.io
-[patch.crates-io]
-core2 = { git = "https://github.com/tangle-network/core2", branch = "master" }
-

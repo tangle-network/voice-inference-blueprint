@@ -16,7 +16,7 @@ integrity = "3874463846ab995a6a9a88412913cacec6144f7605daa1af57c2d8bf3f210b13"
 name = "shielded-payment-gateway"
 version = "0.1.0"
 git = "https://github.com/tangle-network/shielded-payment-gateway.git"
-rev = "eaab84c"
+rev = "eaab84c9a7533849bfaecec382edfeb8115e6048"
 
 [[dependencies]]
 name = "tnt-core"

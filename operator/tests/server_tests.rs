@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
+use tangle_inference_core::PaymentRails;
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
@@ -49,6 +50,7 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             max_per_account_requests: 0,
         },
         billing: BillingConfig {
+            payment_rails: PaymentRails::SHIELDED,
             billing_required: false,
             max_spend_per_request: 1_000_000,
             min_credit_balance: 1000,
@@ -57,6 +59,7 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             clock_skew_tolerance_secs: 30,
             max_gas_price_gwei: 0,
             nonce_store_path: None,
+            direct_replay_store_path: None,
             payment_token_address: None,
         },
         gpu: GpuConfig {
