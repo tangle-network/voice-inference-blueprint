@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import { Test } from "forge-std/Test.sol";
-import { InferenceBSM } from "../src/InferenceBSM.sol";
+import {Test} from "forge-std/Test.sol";
+import {InferenceBSM} from "../src/InferenceBSM.sol";
+import {BlueprintServiceManagerBase} from "tnt-core/BlueprintServiceManagerBase.sol";
 
 contract MockTsUSD {
     mapping(address => uint256) public balanceOf;
@@ -46,9 +47,10 @@ contract InferenceBSMTest is Test {
 
     function setUp() public {
         tsUSD = new MockTsUSD();
-        bsm = new InferenceBSM(address(tsUSD));
+        bsm = new InferenceBSM(address(tsUSD), tangleCore);
 
         // Initialize blueprint
+        vm.prank(tangleCore);
         bsm.onBlueprintCreated(1, owner, tangleCore);
 
         // Configure a model
@@ -72,7 +74,8 @@ contract InferenceBSMTest is Test {
     }
 
     function test_cannotReinitialize() public {
-        vm.expectRevert(InferenceBSM.AlreadyInitialized.selector);
+        vm.expectRevert(BlueprintServiceManagerBase.AlreadyInitialized.selector);
+        vm.prank(tangleCore);
         bsm.onBlueprintCreated(2, owner, tangleCore);
     }
 
@@ -90,7 +93,7 @@ contract InferenceBSMTest is Test {
     function test_configureModel_onlyOwner() public {
         vm.prank(user);
         vm.expectRevert(
-            abi.encodeWithSelector(InferenceBSM.OnlyBlueprintOwnerAllowed.selector, user, owner)
+            abi.encodeWithSelector(BlueprintServiceManagerBase.OnlyBlueprintOwnerAllowed.selector, user, owner)
         );
         bsm.configureModel("test-model", 4096, 1, 1, 8000);
     }
@@ -107,11 +110,7 @@ contract InferenceBSMTest is Test {
 
     function test_registerOperator() public {
         bytes memory regData = abi.encode(
-            "meta-llama/Llama-3.1-8B-Instruct",
-            uint32(2),
-            uint32(48_000),
-            "NVIDIA A100",
-            "https://op1.example.com"
+            "meta-llama/Llama-3.1-8B-Instruct", uint32(2), uint32(48_000), "NVIDIA A100", "https://op1.example.com"
         );
 
         vm.prank(tangleCore);
@@ -122,13 +121,8 @@ contract InferenceBSMTest is Test {
     }
 
     function test_registerOperator_unsupportedModel() public {
-        bytes memory regData = abi.encode(
-            "nonexistent-model",
-            uint32(1),
-            uint32(16_000),
-            "NVIDIA A100",
-            "https://op1.example.com"
-        );
+        bytes memory regData =
+            abi.encode("nonexistent-model", uint32(1), uint32(16_000), "NVIDIA A100", "https://op1.example.com");
 
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(InferenceBSM.ModelNotSupported.selector, "nonexistent-model"));
@@ -151,15 +145,13 @@ contract InferenceBSMTest is Test {
 
     function test_registerOperator_onlyTangle() public {
         bytes memory regData = abi.encode(
-            "meta-llama/Llama-3.1-8B-Instruct",
-            uint32(1),
-            uint32(16_000),
-            "NVIDIA A100",
-            "https://op1.example.com"
+            "meta-llama/Llama-3.1-8B-Instruct", uint32(1), uint32(16_000), "NVIDIA A100", "https://op1.example.com"
         );
 
         vm.prank(user);
-        vm.expectRevert(abi.encodeWithSelector(InferenceBSM.OnlyTangleAllowed.selector, user, tangleCore));
+        vm.expectRevert(
+            abi.encodeWithSelector(BlueprintServiceManagerBase.OnlyTangleAllowed.selector, user, tangleCore)
+        );
         bsm.onRegister(operator1, regData);
     }
 
@@ -292,11 +284,7 @@ contract InferenceBSMTest is Test {
 
     function _registerOperator(address op) internal {
         bytes memory regData = abi.encode(
-            "meta-llama/Llama-3.1-8B-Instruct",
-            uint32(2),
-            uint32(48_000),
-            "NVIDIA A100",
-            "https://operator.example.com"
+            "meta-llama/Llama-3.1-8B-Instruct", uint32(2), uint32(48_000), "NVIDIA A100", "https://operator.example.com"
         );
         vm.prank(tangleCore);
         bsm.onRegister(op, regData);

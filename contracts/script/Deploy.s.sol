@@ -6,7 +6,7 @@ import {InferenceBSM} from "../src/InferenceBSM.sol";
 
 contract Deploy is RegisterBlueprint {
     function _deployManager() internal override returns (address) {
-        return address(new InferenceBSM(vm.envAddress("TSUSD_ADDRESS")));
+        return address(new InferenceBSM(vm.envAddress("TSUSD_ADDRESS"), vm.envAddress("TANGLE_CORE")));
     }
 
     function _report(address manager, uint64 blueprintId) internal override {
