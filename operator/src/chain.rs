@@ -147,7 +147,7 @@ pub async fn run_tts(
     let character_count = request.input.len() as u32;
 
     Ok(TangleResult(TTSResult {
-        audioData: audio_bytes.to_vec(),
+        audioData: audio_bytes.to_vec().into(),
         characterCount: character_count,
         format: response_format,
     }))
