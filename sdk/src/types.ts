@@ -20,17 +20,7 @@ export interface ModelList {
   data: ModelInfo[]
 }
 
-/** ShieldedCredits spend authorization */
-export interface SpendAuth {
-  commitment: string
-  serviceId: bigint
-  jobIndex: number
-  amount: bigint
-  operator: string
-  nonce: bigint
-  expiry: bigint
-  signature: string
-}
+export type { SpendAuth } from "@tangle-network/tcloud/shielded";
 
 /** Client configuration */
 export interface VoiceClientConfig {

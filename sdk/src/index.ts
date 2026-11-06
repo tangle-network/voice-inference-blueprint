@@ -1,5 +1,4 @@
 import { signSpendAuth as signTcloudSpendAuth } from "@tangle-network/tcloud/shielded";
-import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import type {
   SpeechOptions,
@@ -16,47 +15,36 @@ import type {
 export type * from "./types";
 
 export function createVoiceClient(config: VoiceClientConfig) {
-  const spendingWallet = privateKeyToAccount(config.spendingKeyPrivate as Hex);
   let currentNonce = 0n;
 
-    async function signSpendAuth(
+  async function signSpendAuth(
     amount: bigint,
     nonce: bigint,
     expirySeconds: number = 300
   ): Promise<SpendAuth> {
     const expiry = BigInt(Math.floor(Date.now() / 1000)) + BigInt(expirySeconds);
 
-    const { signature } = await signTcloudSpendAuth(
+    return signTcloudSpendAuth(
       { privateKey: config.spendingKeyPrivate as Hex, commitment: config.commitment as Hex },
       { chainId: config.chainId, creditsAddress: config.shieldedCreditsAddress as Hex,
         serviceId: config.serviceId, jobIndex: 0, operator: config.operatorAddress as Hex,
         amount, nonce, expiry },
     );
 
-    return {
-      commitment: config.commitment,
-      serviceId: config.serviceId,
-      jobIndex: 0,
-      amount,
-      operator: config.operatorAddress,
-      nonce,
-      expiry,
-      signature,
-    };
   }
 
-    function estimateCost(
+  function estimateCost(
     characterCount: number,
     pricePer1kCharacters: bigint
   ): bigint {
     return (BigInt(characterCount) * pricePer1kCharacters) / 1000n;
   }
 
-    async function synthesize(
+  async function synthesize(
     input: string,
     options: SpeechOptions & {
-            authorizedAmount?: bigint;
-            pricePer1kCharacters?: bigint;
+      authorizedAmount?: bigint;
+      pricePer1kCharacters?: bigint;
     } = {}
   ): Promise<ArrayBuffer> {
     const pricePer1k = options.pricePer1kCharacters ?? 10n;
@@ -73,16 +61,7 @@ export function createVoiceClient(config: VoiceClientConfig) {
       voice: options.voice,
       response_format: options.responseFormat ?? "mp3",
       speed: options.speed ?? 1.0,
-      spend_auth: {
-        commitment: spendAuth.commitment,
-        service_id: Number(spendAuth.serviceId),
-        job_index: spendAuth.jobIndex,
-        amount: spendAuth.amount.toString(),
-        operator: spendAuth.operator,
-        nonce: Number(spendAuth.nonce),
-        expiry: Number(spendAuth.expiry),
-        signature: spendAuth.signature,
-      },
+      spend_auth: spendAuth,
     };
 
     const response = await fetch(`${config.operatorUrl}/v1/audio/speech`, {
@@ -101,7 +80,7 @@ export function createVoiceClient(config: VoiceClientConfig) {
     return response.arrayBuffer();
   }
 
-    async function listModels(): Promise<ModelList> {
+  async function listModels(): Promise<ModelList> {
     const response = await fetch(`${config.operatorUrl}/v1/models`);
     if (!response.ok) {
       throw new Error(`Failed to list models: ${response.statusText}`);
@@ -109,7 +88,7 @@ export function createVoiceClient(config: VoiceClientConfig) {
     return response.json();
   }
 
-    async function healthCheck(): Promise<boolean> {
+  async function healthCheck(): Promise<boolean> {
     try {
       const response = await fetch(`${config.operatorUrl}/health`);
       return response.ok;
@@ -118,11 +97,11 @@ export function createVoiceClient(config: VoiceClientConfig) {
     }
   }
 
-    function setNonce(nonce: bigint) {
+  function setNonce(nonce: bigint) {
     currentNonce = nonce;
   }
 
-    async function listSttProviders(): Promise<SttProvider[]> {
+  async function listSttProviders(): Promise<SttProvider[]> {
     const response = await fetch(`${config.operatorUrl}/v1/stt/providers`);
     if (!response.ok) {
       throw new Error(`Failed to list STT providers: ${response.statusText}`);
@@ -131,7 +110,7 @@ export function createVoiceClient(config: VoiceClientConfig) {
     return data.providers;
   }
 
-    async function transcribe(
+  async function transcribe(
     audio: Blob | Buffer,
     options: TranscribeOptions = {}
   ): Promise<TranscriptionResult> {
@@ -180,9 +159,6 @@ export function createVoiceClient(config: VoiceClientConfig) {
     signSpendAuth,
     estimateCost,
     setNonce,
-    get address() {
-      return spendingWallet.address;
-    },
   };
 }
 
