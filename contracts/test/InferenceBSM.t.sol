@@ -19,6 +19,7 @@ contract InferenceBSMTest is Test {
 
     function setUp() public {
         tsUSD = address(0xD00D);
+        vm.prank(owner);
         bsm = new InferenceBSM(address(tsUSD), tangleCore);
 
         // Initialize blueprint

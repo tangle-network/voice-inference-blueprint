@@ -20,7 +20,7 @@ fn registration_payload(config: &OperatorConfig) -> Vec<u8> {
 tangle_inference_core::run_operator!(
     OperatorConfig::load(None),
     registration_payload,
-    voice_inference::router(),
+    |_| voice_inference::router(),
     |config| VoiceInferenceServer { config },
     no_qos
 );
