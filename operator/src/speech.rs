@@ -39,11 +39,8 @@ impl SpeechClient {
     ) -> anyhow::Result<()> {
         self.process.supervise(shutdown).await
     }
-    fn speech_url(&self) -> String {
-        format!(
-            "http://{}:{}/v1/audio/speech",
-            self.config.vllm.host, self.config.vllm.port
-        )
+    pub(crate) fn speech_url(&self) -> String {
+        format!("{}/v1/audio/speech", self.process.endpoint())
     }
 
     /// Proxy a speech synthesis request to vLLM-Omni, returning raw audio bytes.
