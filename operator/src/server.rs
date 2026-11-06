@@ -229,7 +229,7 @@ async fn speech_handler(
         None
     };
 
-    // 5. Cost sanity check, per-account concurrency, pre-auth, nonce insert.
+    // 5. Cost sanity check, per-account concurrency, pre-auth.
     if let (Some(ref spend_auth), Some(preauth)) = (&req.spend_auth, preauth_amount) {
         let character_count = req.input.len() as u32;
         let estimated_max_cost = backend.calculate_cost(character_count);
@@ -284,17 +284,6 @@ async fn speech_handler(
                 "authorization_failed",
             );
         }
-
-        // Record the nonce as used AFTER successful on-chain authorization
-        let nonce_key = (spend_auth.commitment.clone(), spend_auth.nonce);
-        state
-            .nonce_store
-            .insert(
-                nonce_key,
-                spend_auth.expiry,
-                state.billing_config.clock_skew_tolerance_secs,
-            )
-            .await;
     }
 
     // 6. Send TTS request to voice engine
