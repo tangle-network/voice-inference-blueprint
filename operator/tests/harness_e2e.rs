@@ -1,18 +1,6 @@
-//! BlueprintHarness E2E test — full BPM lifecycle with mock vLLM-Omni.
-//!
-//! This test exercises the complete blueprint-manager flow:
-//!   1. Boot Anvil with seeded Tangle contracts (LocalTestnet)
-//!   2. Wire the Router + TangleLayer into a BlueprintRunner
-//!   3. Start a mock vLLM-Omni HTTP server (no GPU required)
-//!   4. Submit a TTS job on-chain
-//!   5. Verify the result is returned on-chain
-//!   6. Shutdown cleanly
-//!
-//! Run:
-//!   cargo test --test harness_e2e -- --nocapture
-//!
-//! Note: requires tnt-core contract artifacts (LocalTestnet broadcast).
-//! If missing, the test is skipped gracefully.
+//! Full Anvil BlueprintRunner TTS lifecycle through a real HTTP engine peer.
+//! Run with `cargo test --all-features --test harness_e2e -- --nocapture`.
+//! Requires tnt-core LocalTestnet broadcast artifacts.
 
 use alloy_primitives::Bytes;
 use alloy_sol_types::SolValue;

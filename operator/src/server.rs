@@ -8,9 +8,7 @@
 //! * Request/response types for the OpenAI TTS wire format.
 //! * HTTP handlers that glue the shared billing flow to the vLLM-Omni subprocess.
 
-use blueprint_sdk::std::collections::HashMap;
-use blueprint_sdk::std::sync::Arc;
-use blueprint_sdk::std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
