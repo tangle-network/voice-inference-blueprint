@@ -1,8 +1,4 @@
 //! Voice-specific operator configuration.
-//!
-//! Shared infrastructure config (`TangleConfig`, `ServerConfig`, `BillingConfig`,
-//! `GpuConfig`) lives in `tangle-inference-core` and is re-exported here for
-//! convenience.
 
 use serde::{Deserialize, Serialize};
 

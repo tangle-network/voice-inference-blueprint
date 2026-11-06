@@ -17,14 +17,14 @@ A Tangle Blueprint enabling operators to serve TTS (Text-to-Speech) inference vi
 - **On-chain jobs** via TangleProducer — verifiable results on Tangle
 - **x402 HTTP** — fast private TTS at `/v1/audio/speech`
 
-Single model per instance. Built with [Blueprint SDK](https://github.com/tangle-network/blueprint) `0.1.0-alpha.22`.
+Single model per instance. Dependencies are pinned in [Cargo.toml](Cargo.toml).
 
 ## Components
 
 | Component | Language | Description |
 |-----------|----------|-------------|
 | `operator/` | Rust | Operator binary — vLLM subprocess, HTTP server, SpendAuth billing |
-| `contracts/` | Solidity | InferenceBSM — GPU validation, model pricing (24 tests) |
+| `contracts/` | Solidity | InferenceBSM — GPU validation, model pricing |
 | `sdk/` | TypeScript | Client SDK — OpenAI-compatible TTS interface with spend auth signing |
 
 ## Related Repos
@@ -37,6 +37,6 @@ Single model per instance. Built with [Blueprint SDK](https://github.com/tangle-
 
 MIT
 
-## Release definitions
+## Releases
 
-`deploy/register-blueprint.sh` reads the prepared definition from this repository's latest GitHub Release. The release workflow packages the actual binary digest, SDK download manifest, and execution profile together. Set `BLUEPRINT_DEFINITION` to a prepared definition for a specific release. For a local Anvil proof only, set `BLUEPRINT_BINARY` to the built operator binary; registration hashes that file and requires a loopback RPC on chain 31337.
+[Release](.github/workflows/release.yml) runs cargo-dist using [dist-workspace.toml](dist-workspace.toml). Download the native archive and verify its published checksum; `dist-manifest.json` identifies its executables and target platform.

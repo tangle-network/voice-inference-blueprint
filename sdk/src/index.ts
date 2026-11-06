@@ -13,13 +13,6 @@ import type {
 
 export * from "./types";
 
-// EIP-712 constants matching ShieldedCredits.sol
-const SPEND_TYPEHASH = ethers.keccak256(
-  ethers.toUtf8Bytes(
-    "SpendAuthorization(bytes32 commitment,uint64 serviceId,uint8 jobIndex,uint256 amount,address operator,uint256 nonce,uint64 expiry)"
-  )
-);
-
 const EIP712_DOMAIN = {
   name: "ShieldedCredits",
   version: "1",
