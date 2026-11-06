@@ -11,7 +11,10 @@ use blueprint_sdk::tangle::layers::TangleLayer;
 use blueprint_sdk::Job;
 use tokio::sync::oneshot;
 
-use crate::{config::OperatorConfig, server, speech::SpeechClient};
+use crate::{
+    config::OperatorConfig, server, speech::SpeechClient, AppStateBuilder, BillingClient,
+    NonceStore,
+};
 
 // --- ABI types for on-chain job encoding ---
 
@@ -201,11 +204,8 @@ impl BackgroundService for VoiceInferenceServer {
                 }
             };
 
-            // 3. Create shutdown channel for graceful shutdown
             let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-            // 4. Build the HTTP server state via the shared AppStateBuilder,
-            //    attaching the voice engine as the backend extension.
             let operator_address = billing_client.operator_address();
             let nonce_store = Arc::new(NonceStore::load(config.billing.nonce_store_path.clone()));
             let backend = server::VoiceBackend::new(config.clone(), engine_handle.clone());
