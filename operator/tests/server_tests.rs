@@ -33,7 +33,6 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
                 tensor_parallel_size: 1,
                 extra_args: vec![],
                 command: "python3 -m vllm.entrypoints.openai.api_server".into(),
-                hf_token: None,
                 download_dir: None,
                 startup_timeout_secs: 10,
 
@@ -44,6 +43,7 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             supported_formats: vec!["mp3".into(), "wav".into(), "ogg".into()],
         },
         server: ServerConfig {
+            endpoint_key: None,
             host: "0.0.0.0".into(),
             port: 8080,
             max_concurrent_requests: 2,
