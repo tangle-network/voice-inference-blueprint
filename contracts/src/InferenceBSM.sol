@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import {InferenceBSMBase} from "tangle-inference-core/InferenceBSMBase.sol";
+import {BlueprintServiceManagerBase} from "tnt-core/BlueprintServiceManagerBase.sol";
 
-contract InferenceBSM is InferenceBSMBase {
+contract InferenceBSM is BlueprintServiceManagerBase {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     error InvalidPaymentAsset(address asset);
@@ -52,7 +52,7 @@ contract InferenceBSM is InferenceBSMBase {
 
     /// @param _tsUSD The wrapped stablecoin accepted for payment
     constructor(address _tsUSD, address registry) {
-        _bindRegistrationCore(registry);
+        _initializeBlueprintManager(registry, msg.sender);
         tsUSD = _tsUSD;
     }
 
