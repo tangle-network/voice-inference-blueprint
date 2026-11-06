@@ -59,11 +59,9 @@ async fn mock_speech(Json(body): Json<Value>) -> Response<Body> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tts_job_lifecycle() -> Result<()> {
     timeout(TEST_TIMEOUT, async {
-        // 1. Start mock vLLM-Omni
         let mock_url = start_mock_vllm().await;
         println!("Mock vLLM-Omni at {mock_url}");
 
-        // 2. Boot harness (Anvil + seeded contracts + BlueprintRunner)
         let harness = match BlueprintHarness::builder(router())
             .poll_interval(Duration::from_millis(50))
             .with_pre_spawn_hook(move |_env| {
@@ -93,12 +91,10 @@ async fn test_tts_job_lifecycle() -> Result<()> {
             harness.service_id()
         );
 
-        // 3. Verify service is active
         let client = harness.client();
         let service = client.get_service(harness.service_id()).await?;
         println!("Service status: {:?}", service.status);
 
-        // 4. Submit a TTS job
         let request = TTSRequest {
             input: "Hello, world! This is a test.".to_string(),
             voice: "alloy".to_string(),
@@ -113,14 +109,12 @@ async fn test_tts_job_lifecycle() -> Result<()> {
             .context("failed to submit TTS job")?;
         println!("Job submitted: call_id={}", submission.call_id);
 
-        // 5. Wait for result
         let output = harness
             .wait_for_job_result(submission)
             .await
             .context("failed to get job result")?;
         println!("Got result ({} bytes)", output.len());
 
-        // 6. Decode and verify
         let result = TTSResult::abi_decode(&output).context("failed to decode TTSResult")?;
         println!("  audioData: {} bytes", result.audioData.len());
         println!("  characterCount: {}", result.characterCount);
@@ -138,7 +132,6 @@ async fn test_tts_job_lifecycle() -> Result<()> {
 
         println!("\n  ✓ Single TTS job lifecycle passed");
 
-        // 7. Submit multiple sequential jobs
         let inputs = [
             "Hello",
             "Explain gravity in simple terms",
@@ -166,7 +159,6 @@ async fn test_tts_job_lifecycle() -> Result<()> {
 
         println!("  ✓ Multiple sequential TTS jobs passed");
 
-        // 8. Shutdown
         harness.shutdown().await;
         Ok(())
     })

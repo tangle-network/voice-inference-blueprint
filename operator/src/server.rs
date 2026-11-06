@@ -321,7 +321,8 @@ async fn speech_handler(
     // 7. Post-response settlement
     if let (Some(ref spend_auth), Some(preauth)) = (&req.spend_auth, preauth_amount) {
         let actual_cost = backend.calculate_cost(character_count);
-        if let Err(e) = settle_billing(&state.billing, spend_auth, preauth, actual_cost).await {
+        if let Err(e) = settle_billing(&state.billing, spend_auth, preauth, Some(actual_cost)).await
+        {
             tracing::error!(error = %e, "on-chain settlement failed — manual recovery required");
         }
     }
@@ -481,8 +482,13 @@ async fn transcription_handler(
             extra: HashMap::from([("centiseconds".into(), actual_centiseconds)]),
             ..Default::default()
         });
-        if let Err(e) =
-            settle_billing(&state.billing, auth, preauth.unwrap_or(0), actual_cost).await
+        if let Err(e) = settle_billing(
+            &state.billing,
+            auth,
+            preauth.unwrap_or(0),
+            Some(actual_cost),
+        )
+        .await
         {
             tracing::error!(error = %e, "STT settlement failed");
         }
