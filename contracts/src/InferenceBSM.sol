@@ -164,7 +164,7 @@ contract InferenceBSM is BlueprintServiceManagerBase {
         uint8,
         uint64 jobCallId,
         address operator,
-        bytes calldata,
+        bytes32,
         bytes calldata outputs
     ) external payable override onlyFromTangle {
         if (!operatorCaps[operator].active) revert OperatorNotRegistered(operator);
