@@ -50,16 +50,16 @@ struct VoiceEndpoint {
 
 /// Called by VoiceInferenceServer to register the voice engine endpoint for on-chain job handlers.
 #[allow(clippy::result_large_err)]
-fn register_voice_endpoint(config: &OperatorConfig) -> Result<(), RunnerError> {
+fn register_voice_endpoint(
+    config: &OperatorConfig,
+    speech: &SpeechClient,
+) -> Result<(), RunnerError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| RunnerError::Other(format!("failed to build HTTP client: {e}").into()))?;
     let endpoint = VoiceEndpoint {
-        url: format!(
-            "http://{}:{}/v1/audio/speech",
-            config.vllm.host, config.vllm.port
-        ),
+        url: speech.speech_url(),
         model: config.vllm.model.clone(),
         client,
     };
@@ -185,7 +185,7 @@ impl BackgroundService for VoiceInferenceServer {
             tracing::info!("vLLM is ready");
 
             // Register the voice engine endpoint for on-chain job handlers
-            if let Err(e) = register_voice_endpoint(&config) {
+            if let Err(e) = register_voice_endpoint(&config, &engine_handle) {
                 tracing::error!(error = %e, "failed to register voice engine endpoint");
                 let _ = tx.send(Err(e));
                 return;
