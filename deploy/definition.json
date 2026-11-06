@@ -3,12 +3,12 @@
   "manager": "0x0000000000000000000000000000000000000000",
   "metadata": {
     "name": "voice-inference",
-    "description": "Voice synthesis and transcription operator (TTS/STT) with shielded billing via Tangle",
+    "description": "Qwen/Qwen3-TTS-1.7B voice synthesis and transcription operator with shielded billing via Tangle",
     "author": "Tangle Network",
     "license": "MIT OR Apache-2.0",
     "website": "https://tangle.tools",
     "code_repository": "https://github.com/tangle-network/voice-inference-blueprint",
-    "profiling_data": "{\"execution_profile\":{\"gpu\":{\"policy\":\"preferred\",\"min_count\":1,\"min_vram_gb\":8}}}",
+    "profiling_data": "{\"execution_profile\":{\"gpu\":{\"policy\":\"preferred\",\"min_count\":1,\"min_vram_gb\":17}}}",
     "category": "AI/Inference"
   },
   "config": {
