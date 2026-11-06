@@ -111,11 +111,9 @@ pub fn router() -> Router {
 #[debug_job]
 pub async fn run_tts(
     TangleArg(request): TangleArg<TTSRequest>,
-) -> Result<TangleResult<TTSResult>, RunnerError> {
+) -> anyhow::Result<TangleResult<TTSResult>> {
     let endpoint = VOICE_ENDPOINT.get().ok_or_else(|| {
-        RunnerError::Other(
-            "voice engine endpoint not registered — VoiceInferenceServer not started".into(),
-        )
+        anyhow::anyhow!("voice engine endpoint not registered — VoiceInferenceServer not started",)
     })?;
 
     let voice = if request.voice.is_empty() {
@@ -146,27 +144,27 @@ pub async fn run_tts(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "TTS request failed");
-            RunnerError::Other(format!("TTS request failed: {e}").into())
+            anyhow::anyhow!("TTS request failed: {e}")
         })?;
 
     let status = resp.status();
     if !status.is_success() {
         let error_text = resp.text().await.unwrap_or_default();
         tracing::error!(status = %status, error = %error_text, "TTS request returned error");
-        return Err(RunnerError::Other(
-            format!("TTS request failed with status {status}: {error_text}").into(),
-        ));
+        return Err(anyhow::anyhow!(format!(
+            "TTS request failed with status {status}: {error_text}"
+        ),));
     }
 
     let audio_bytes = resp.bytes().await.map_err(|e| {
         tracing::error!(error = %e, "TTS response read failed");
-        RunnerError::Other(format!("TTS response read failed: {e}").into())
+        anyhow::anyhow!("TTS response read failed: {e}")
     })?;
 
     let character_count = request.input.len() as u32;
 
     Ok(TangleResult(TTSResult {
-        audioData: audio_bytes.to_vec().into(),
+        audioData: audio_bytes.to_vec(),
         characterCount: character_count,
         format: response_format,
     }))
