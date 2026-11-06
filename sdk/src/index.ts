@@ -1,4 +1,6 @@
-import { ethers } from "ethers";
+import { signSpendAuth as signTcloudSpendAuth } from "@tangle-network/tcloud/shielded";
+import { privateKeyToAccount } from "viem/accounts";
+import type { Hex } from "viem";
 import type {
   SpeechOptions,
   VoiceClientConfig,
@@ -11,75 +13,25 @@ import type {
   TranscribeOptions,
 } from "./types";
 
-export * from "./types";
+export type * from "./types";
 
-const EIP712_DOMAIN = {
-  name: "ShieldedCredits",
-  version: "1",
-};
-
-/**
- * High-level voice inference client that handles SpendAuth signing and request routing.
- *
- * Usage:
- * ```ts
- * const client = createVoiceClient({
- *   operatorUrl: "https://op1.example.com",
- *   shieldedCreditsAddress: "0x...",
- *   chainId: 1,
- *   commitment: "0x...",
- *   serviceId: 1n,
- *   operatorAddress: "0x...",
- *   spendingKeyPrivate: "0x...",
- * });
- *
- * const audioBuffer = await client.synthesize("Hello, world!");
- * // audioBuffer is an ArrayBuffer containing MP3 audio
- * ```
- */
 export function createVoiceClient(config: VoiceClientConfig) {
-  const spendingWallet = new ethers.Wallet(config.spendingKeyPrivate);
+  const spendingWallet = privateKeyToAccount(config.spendingKeyPrivate as Hex);
   let currentNonce = 0n;
 
-  /**
-   * Sign a SpendAuth for a given amount.
-   */
-  async function signSpendAuth(
+    async function signSpendAuth(
     amount: bigint,
     nonce: bigint,
     expirySeconds: number = 300
   ): Promise<SpendAuth> {
     const expiry = BigInt(Math.floor(Date.now() / 1000)) + BigInt(expirySeconds);
 
-    const domain = {
-      ...EIP712_DOMAIN,
-      chainId: config.chainId,
-      verifyingContract: config.shieldedCreditsAddress,
-    };
-
-    const types = {
-      SpendAuthorization: [
-        { name: "commitment", type: "bytes32" },
-        { name: "serviceId", type: "uint64" },
-        { name: "jobIndex", type: "uint8" },
-        { name: "amount", type: "uint256" },
-        { name: "operator", type: "address" },
-        { name: "nonce", type: "uint256" },
-        { name: "expiry", type: "uint64" },
-      ],
-    };
-
-    const value = {
-      commitment: config.commitment,
-      serviceId: config.serviceId,
-      jobIndex: 0, // TTS job
-      amount: amount,
-      operator: config.operatorAddress,
-      nonce: nonce,
-      expiry: expiry,
-    };
-
-    const signature = await spendingWallet.signTypedData(domain, types, value);
+    const { signature } = await signTcloudSpendAuth(
+      { privateKey: config.spendingKeyPrivate as Hex, commitment: config.commitment as Hex },
+      { chainId: config.chainId, creditsAddress: config.shieldedCreditsAddress as Hex,
+        serviceId: config.serviceId, jobIndex: 0, operator: config.operatorAddress as Hex,
+        amount, nonce, expiry },
+    );
 
     return {
       commitment: config.commitment,
@@ -93,27 +45,18 @@ export function createVoiceClient(config: VoiceClientConfig) {
     };
   }
 
-  /**
-   * Estimate cost for a request based on input character count.
-   */
-  function estimateCost(
+    function estimateCost(
     characterCount: number,
     pricePer1kCharacters: bigint
   ): bigint {
     return (BigInt(characterCount) * pricePer1kCharacters) / 1000n;
   }
 
-  /**
-   * Send a speech synthesis request with automatic SpendAuth signing.
-   * Returns raw audio bytes as an ArrayBuffer.
-   */
-  async function synthesize(
+    async function synthesize(
     input: string,
     options: SpeechOptions & {
-      /** Pre-authorized amount. If not set, a default estimate is used. */
-      authorizedAmount?: bigint;
-      /** Price per 1k characters (from model config) */
-      pricePer1kCharacters?: bigint;
+            authorizedAmount?: bigint;
+            pricePer1kCharacters?: bigint;
     } = {}
   ): Promise<ArrayBuffer> {
     const pricePer1k = options.pricePer1kCharacters ?? 10n;
@@ -158,10 +101,7 @@ export function createVoiceClient(config: VoiceClientConfig) {
     return response.arrayBuffer();
   }
 
-  /**
-   * List available models from the operator.
-   */
-  async function listModels(): Promise<ModelList> {
+    async function listModels(): Promise<ModelList> {
     const response = await fetch(`${config.operatorUrl}/v1/models`);
     if (!response.ok) {
       throw new Error(`Failed to list models: ${response.statusText}`);
@@ -169,10 +109,7 @@ export function createVoiceClient(config: VoiceClientConfig) {
     return response.json();
   }
 
-  /**
-   * Check operator health.
-   */
-  async function healthCheck(): Promise<boolean> {
+    async function healthCheck(): Promise<boolean> {
     try {
       const response = await fetch(`${config.operatorUrl}/health`);
       return response.ok;
@@ -181,17 +118,11 @@ export function createVoiceClient(config: VoiceClientConfig) {
     }
   }
 
-  /**
-   * Set the current nonce (e.g., after querying the credit account on-chain).
-   */
-  function setNonce(nonce: bigint) {
+    function setNonce(nonce: bigint) {
     currentNonce = nonce;
   }
 
-  /**
-   * List available STT providers from the operator.
-   */
-  async function listSttProviders(): Promise<SttProvider[]> {
+    async function listSttProviders(): Promise<SttProvider[]> {
     const response = await fetch(`${config.operatorUrl}/v1/stt/providers`);
     if (!response.ok) {
       throw new Error(`Failed to list STT providers: ${response.statusText}`);
@@ -200,11 +131,7 @@ export function createVoiceClient(config: VoiceClientConfig) {
     return data.providers;
   }
 
-  /**
-   * Transcribe audio using the operator's configured STT backend.
-   * Accepts a Blob (browser) or Buffer (Node.js).
-   */
-  async function transcribe(
+    async function transcribe(
     audio: Blob | Buffer,
     options: TranscribeOptions = {}
   ): Promise<TranscriptionResult> {
@@ -213,8 +140,7 @@ export function createVoiceClient(config: VoiceClientConfig) {
     if (audio instanceof Blob) {
       formData.append("file", audio, "audio.wav");
     } else {
-      // Node.js Buffer — wrap in a Blob
-      const bytes = new Uint8Array(audio.byteLength);
+        const bytes = new Uint8Array(audio.byteLength);
       bytes.set(audio);
       const blob = new Blob([bytes.buffer], { type: "audio/wav" });
       formData.append("file", blob, "audio.wav");
