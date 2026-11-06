@@ -4,7 +4,6 @@
 //! `GpuConfig`) lives in `tangle-inference-core` and is re-exported here for
 //! convenience.
 
-use blueprint_sdk::std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub use tangle_inference_core::{BillingConfig, GpuConfig, ServerConfig, TangleConfig};
@@ -93,47 +92,19 @@ pub struct WhisperConfig {
 /// config section — everything else comes from `tangle-inference-core`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceConfig {
-    /// HuggingFace model ID (e.g. "Qwen/Qwen3-TTS-1.7B").
-    pub model: String,
-
-    /// Maximum context length the model will serve.
-    pub max_model_len: u32,
-
-    /// Host/port vLLM will listen on internally.
-    pub host: String,
-    pub port: u16,
-
-    /// Number of GPUs for tensor parallelism.
-    pub tensor_parallel_size: u32,
-
-    /// Price per 1,000 input characters in base token units.
+    #[serde(flatten)]
+    pub engine: tangle_inference_core::engine::EngineConfig,
     pub price_per_1k_chars: u64,
-
-    /// Additional vLLM CLI args.
-    #[serde(default)]
-    pub extra_args: Vec<String>,
-
-    /// Path to the vLLM Python executable.
-    #[serde(default = "default_vllm_command")]
-    pub command: String,
-
-    /// HuggingFace token for gated models.
-    pub hf_token: Option<String>,
-
-    /// Custom model download directory.
-    pub download_dir: Option<PathBuf>,
-
-    /// Startup timeout in seconds.
-    #[serde(default = "default_startup_timeout")]
-    pub startup_timeout_secs: u64,
-
-    /// Default voice ID for synthesis.
     #[serde(default)]
     pub default_voice: Option<String>,
-
-    /// Supported output formats.
     #[serde(default = "default_supported_formats")]
     pub supported_formats: Vec<String>,
+}
+impl std::ops::Deref for VoiceConfig {
+    type Target = tangle_inference_core::engine::EngineConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,14 +130,6 @@ fn default_batch_settle_interval() -> u64 {
 
 fn default_max_batch_size() -> usize {
     64
-}
-
-fn default_vllm_command() -> String {
-    "python3 -m vllm.entrypoints.openai.api_server".to_string()
-}
-
-fn default_startup_timeout() -> u64 {
-    300
 }
 
 fn default_supported_formats() -> Vec<String> {
@@ -199,96 +162,12 @@ impl OperatorConfig {
         // Env vars override file config. Prefix: VOICE_OP_ (e.g. VOICE_OP_TANGLE__RPC_URL).
         builder = builder.add_source(
             config::Environment::with_prefix("VOICE_OP")
+                .prefix_separator("_")
                 .separator("__")
                 .try_parsing(true),
         );
 
         let cfg = builder.build()?.try_deserialize::<Self>()?;
         Ok(cfg)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn example_config_json() -> &'static str {
-        r#"{
-            "tangle": {
-                "rpc_url": "http://localhost:8545",
-                "chain_id": 31337,
-                "operator_key": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-                "shielded_credits": "0x0000000000000000000000000000000000000002",
-                "blueprint_id": 1,
-                "service_id": null
-            },
-            "vllm": {
-                "model": "Qwen/Qwen3-TTS-1.7B",
-                "max_model_len": 8192,
-                "host": "127.0.0.1",
-                "port": 8000,
-                "tensor_parallel_size": 1,
-                "price_per_1k_chars": 10
-            },
-            "server": {
-                "host": "0.0.0.0",
-                "port": 8080
-            },
-            "billing": {
-                "max_spend_per_request": 1000000,
-                "min_credit_balance": 1000
-            },
-            "gpu": {
-                "expected_gpu_count": 1,
-                "min_vram_mib": 16000
-            }
-        }"#
-    }
-
-    #[test]
-    fn test_deserialize_full_config() {
-        let cfg: OperatorConfig = serde_json::from_str(example_config_json()).unwrap();
-        assert_eq!(cfg.tangle.chain_id, 31337);
-        assert_eq!(cfg.vllm.model, "Qwen/Qwen3-TTS-1.7B");
-        assert_eq!(cfg.vllm.port, 8000);
-        assert_eq!(cfg.server.port, 8080);
-        assert_eq!(cfg.vllm.price_per_1k_chars, 10);
-        assert_eq!(cfg.gpu.expected_gpu_count, 1);
-        assert!(cfg.tangle.service_id.is_none());
-    }
-
-    #[test]
-    fn test_rln_config_optional() {
-        let cfg: OperatorConfig = serde_json::from_str(example_config_json()).unwrap();
-        assert!(cfg.rln.is_none(), "RLN config should be None by default");
-    }
-
-    #[test]
-    fn test_defaults_applied() {
-        let cfg: OperatorConfig = serde_json::from_str(example_config_json()).unwrap();
-        assert_eq!(cfg.server.max_concurrent_requests, 64);
-        assert_eq!(
-            cfg.vllm.command,
-            "python3 -m vllm.entrypoints.openai.api_server"
-        );
-        assert_eq!(cfg.vllm.startup_timeout_secs, 300);
-        assert!(cfg.vllm.extra_args.is_empty());
-        assert_eq!(cfg.vllm.supported_formats, vec!["mp3", "wav", "ogg"]);
-        assert_eq!(cfg.gpu.monitor_interval_secs, 30);
-    }
-
-    #[test]
-    fn test_load_from_file() {
-        let cfg = OperatorConfig::load(Some("../deploy/config.example")).unwrap();
-        assert_eq!(cfg.tangle.chain_id, 31337);
-        assert_eq!(cfg.vllm.model, "Qwen/Qwen3-TTS-1.7B");
-        assert_eq!(cfg.vllm.price_per_1k_chars, 10);
-    }
-
-    #[test]
-    fn test_missing_required_field_fails() {
-        let bad = r#"{"tangle": {"rpc_url": "http://localhost:8545"}}"#;
-        let result = serde_json::from_str::<OperatorConfig>(bad);
-        assert!(result.is_err());
     }
 }

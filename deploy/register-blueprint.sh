@@ -3,7 +3,7 @@
 #
 # Single-shot flow: deploys InferenceBSM (non-upgradeable, constructor takes
 # the tsUSD payment-token address) AND calls Tangle.createBlueprint in the
-# same broadcast via `contracts/script/RegisterBlueprint.s.sol`. This
+# same broadcast via `contracts/script/Deploy.s.sol`. This
 # replaces the prior cargo-tangle CLI two-stage flow.
 #
 # Prerequisites:
@@ -38,18 +38,20 @@ TSUSD_ADDRESS="${TSUSD_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
 
 echo "=== Voice-Inference Blueprint Registration ==="
 echo "Network:     $(cast chain-id --rpc-url "$RPC_URL")"
-echo "Deployer:    $(cast wallet address --private-key "$PRIVATE_KEY")"
 echo "Tangle Core: $TANGLE_CORE"
 echo "tsUSD:       $TSUSD_ADDRESS"
 echo ""
 
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CORE_DIR="$(cargo metadata --manifest-path "$ROOT_DIR/Cargo.toml" --format-version 1 --locked | python3 -c 'import json,sys,pathlib; print(pathlib.Path(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"] == "tangle-inference-core")).parent)')"
 cd "$(dirname "$0")/../contracts"
 
 # Deploy BSM AND register the blueprint in one forge-script broadcast.
 DEPLOY_OUTPUT=$(PRIVATE_KEY="$PRIVATE_KEY" \
     TANGLE_CORE="$TANGLE_CORE" \
     TSUSD_ADDRESS="$TSUSD_ADDRESS" \
-    forge script script/RegisterBlueprint.s.sol \
+    forge script script/Deploy.s.sol:Deploy \
+        --remappings "tangle-inference-core/=$CORE_DIR/contracts/" \
         --rpc-url "$RPC_URL" \
         --broadcast --slow)
 

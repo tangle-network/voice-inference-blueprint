@@ -1,7 +1,7 @@
 pub mod config;
 pub mod server;
+pub mod speech;
 pub mod stt_engine;
-pub mod voice_engine;
 pub mod whisper;
 
 // Re-export shared infrastructure so downstream crates can `use voice_inference::*`.
@@ -31,7 +31,7 @@ use blueprint_sdk::Job;
 use tokio::sync::oneshot;
 
 use crate::config::OperatorConfig;
-use crate::voice_engine::VoiceEngine;
+use crate::speech::SpeechClient;
 
 // --- ABI types for on-chain job encoding ---
 
@@ -189,7 +189,7 @@ impl BackgroundService for VoiceInferenceServer {
 
         tokio::spawn(async move {
             // 1. Start the vLLM-Omni subprocess
-            let engine_handle = match VoiceEngine::spawn(config.clone()).await {
+            let engine_handle = match SpeechClient::spawn(config.clone()).await {
                 Ok(h) => Arc::new(h),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to spawn vLLM");
@@ -262,52 +262,15 @@ impl BackgroundService for VoiceInferenceServer {
                 }
             }
 
-            // 5. Watchdog loop: monitor vLLM process and respawn on crash.
-            let mut _live_handle: Option<VoiceEngine> = None;
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(10)) => {}
-                    _ = tokio::signal::ctrl_c() => {
-                        tracing::info!("received shutdown signal, stopping watchdog");
-                        let _ = shutdown_tx.send(true);
-                        engine_handle.shutdown().await;
-                        if let Some(ref h) = _live_handle {
-                            h.shutdown().await;
-                        }
-                        return;
-                    }
-                }
-
-                if !engine_handle.is_healthy().await {
-                    tracing::error!("vLLM health check failed — attempting respawn");
-
-                    engine_handle.shutdown().await;
-
-                    let mut respawn_delay = Duration::from_secs(5);
-                    loop {
-                        tracing::info!(delay_secs = respawn_delay.as_secs(), "respawning vLLM");
-                        match VoiceEngine::spawn(config.clone()).await {
-                            Ok(new_handle) => match new_handle.wait_ready().await {
-                                Ok(()) => {
-                                    tracing::info!("vLLM respawned successfully");
-                                    _live_handle = Some(new_handle);
-                                    break;
-                                }
-                                Err(e) => {
-                                    tracing::error!(error = %e, "respawned vLLM failed readiness");
-                                }
-                            },
-                            Err(e) => {
-                                tracing::error!(error = %e, "failed to respawn vLLM");
-                            }
-                        }
-                        tokio::time::sleep(respawn_delay).await;
-                        respawn_delay = (respawn_delay * 2).min(Duration::from_secs(120));
-                    }
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => { let _ = shutdown_tx.send(true); }
+                result = engine_handle.supervise(shutdown_tx.subscribe()) => {
+                    if let Err(error) = result { tracing::error!(%error, "engine supervision ended"); }
+                    let _ = shutdown_tx.send(true);
                 }
             }
+            engine_handle.shutdown().await;
         });
-
         Ok(rx)
     }
 }

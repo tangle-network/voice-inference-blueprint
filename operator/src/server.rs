@@ -36,21 +36,21 @@ use tangle_inference_core::{
 };
 
 use crate::config::OperatorConfig;
+use crate::speech::SpeechClient;
 use crate::stt_engine::SttEngine;
-use crate::voice_engine::VoiceEngine;
 
 /// Backend attached to `AppState` via `AppStateBuilder::backend`. Handlers
 /// retrieve it via `state.backend::<VoiceBackend>().unwrap()`.
 pub struct VoiceBackend {
     pub config: Arc<OperatorConfig>,
-    pub engine: Arc<VoiceEngine>,
+    pub engine: Arc<SpeechClient>,
     pub cost_model: PerCharCostModel,
     pub stt_engine: Option<Arc<SttEngine>>,
     pub stt_cost_model: Option<PerSecondCostModel>,
 }
 
 impl VoiceBackend {
-    pub fn new(config: Arc<OperatorConfig>, engine: Arc<VoiceEngine>) -> Self {
+    pub fn new(config: Arc<OperatorConfig>, engine: Arc<SpeechClient>) -> Self {
         let cost_model = PerCharCostModel {
             price_per_1k_chars: config.vllm.price_per_1k_chars,
         };

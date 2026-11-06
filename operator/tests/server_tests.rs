@@ -25,17 +25,21 @@ fn test_config(vllm_port: u16) -> OperatorConfig {
             service_id: Some(1),
         },
         vllm: VoiceConfig {
-            model: "test-model".into(),
-            max_model_len: 4096,
-            host: "127.0.0.1".into(),
-            port: vllm_port,
-            tensor_parallel_size: 1,
+            engine: tangle_inference_core::engine::EngineConfig {
+                model: "test-model".into(),
+                max_model_len: 4096,
+                host: "127.0.0.1".into(),
+                port: vllm_port,
+                tensor_parallel_size: 1,
+                extra_args: vec![],
+                command: "python3 -m vllm.entrypoints.openai.api_server".into(),
+                hf_token: None,
+                download_dir: None,
+                startup_timeout_secs: 10,
+
+                ..Default::default()
+            },
             price_per_1k_chars: 10,
-            extra_args: vec![],
-            command: "python3 -m vllm.entrypoints.openai.api_server".into(),
-            hf_token: None,
-            download_dir: None,
-            startup_timeout_secs: 10,
             default_voice: None,
             supported_formats: vec!["mp3".into(), "wav".into(), "ogg".into()],
         },
@@ -119,8 +123,7 @@ async fn test_semaphore_limits_concurrency() {
 #[tokio::test]
 async fn test_backend_calculate_cost() {
     let config = Arc::new(test_config(8000));
-    let engine =
-        Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
+    let engine = Arc::new(voice_inference::speech::SpeechClient::connect(config.clone()).unwrap());
     let backend = VoiceBackend::new(config, engine);
 
     // price_per_1k_chars = 10
@@ -137,8 +140,7 @@ async fn test_backend_calculate_cost() {
 #[tokio::test]
 async fn test_billing_charge_capped_at_preauth() {
     let config = Arc::new(test_config(8000));
-    let engine =
-        Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
+    let engine = Arc::new(voice_inference::speech::SpeechClient::connect(config.clone()).unwrap());
     let backend = VoiceBackend::new(config, engine);
 
     let actual_cost = backend.calculate_cost(50000); // 500
@@ -153,8 +155,7 @@ async fn test_billing_charge_capped_at_preauth() {
 #[tokio::test]
 async fn test_billing_charge_uses_actual_when_below_preauth() {
     let config = Arc::new(test_config(8000));
-    let engine =
-        Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
+    let engine = Arc::new(voice_inference::speech::SpeechClient::connect(config.clone()).unwrap());
     let backend = VoiceBackend::new(config, engine);
 
     let actual_cost = backend.calculate_cost(500); // 5
@@ -177,8 +178,7 @@ fn free_port() -> u16 {
 }
 
 async fn build_test_state(config: Arc<OperatorConfig>) -> voice_inference::AppState {
-    let engine =
-        Arc::new(voice_inference::voice_engine::VoiceEngine::connect(config.clone()).unwrap());
+    let engine = Arc::new(voice_inference::speech::SpeechClient::connect(config.clone()).unwrap());
     let billing = Arc::new(BillingClient::new(&config.tangle, &config.billing).unwrap());
     let operator_address = billing.operator_address();
     let nonce_store = Arc::new(NonceStore::load(None));
