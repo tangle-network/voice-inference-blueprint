@@ -1,25 +1,25 @@
 {
   "name": "@tangle-network/voice-inference-sdk",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Client SDK for Tangle voice inference blueprint with ShieldedCredits billing",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "vitest run",
+    "test": "node scripts/http-e2e.mjs",
     "lint": "eslint src/"
   },
   "dependencies": {
-    "ethers": "^6.13.0",
-    "viem": "^2.21.0"
+    "viem": "^2.21.0",
+    "@tangle-network/tcloud": "^1.0.4"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
-    "vitest": "^3.2.6",
     "@types/node": "^22.0.0"
   },
   "files": [
     "dist/"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "type": "module"
 }

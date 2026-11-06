@@ -1,129 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {BlueprintServiceManagerBase} from "tnt-core/BlueprintServiceManagerBase.sol";
 
-import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-
-// In production, import from tnt-core's npm/soldeer package:
-// import { BlueprintServiceManagerBase } from "tnt-core/BlueprintServiceManagerBase.sol";
-// import { IShieldedCredits } from "tnt-core/shielded/IShieldedCredits.sol";
-//
-// For now we define minimal interfaces inline so the contract compiles standalone.
-
-/// @dev Minimal IBlueprintServiceManager interface (matches tnt-core)
-interface IBlueprintServiceManager {
-    function onBlueprintCreated(uint64 blueprintId, address owner, address tangleCore) external;
-    function onRegister(address operator, bytes calldata registrationInputs) external payable;
-    function onUnregister(address operator) external;
-    function onUpdatePreferences(address operator, bytes calldata newPreferences) external payable;
-    function getHeartbeatInterval(uint64 serviceId) external view returns (bool useDefault, uint64 interval);
-    function getHeartbeatThreshold(uint64 serviceId) external view returns (bool useDefault, uint8 threshold);
-    function getSlashingWindow(uint64 serviceId) external view returns (bool useDefault, uint64 window);
-
-    function getExitConfig(uint64 serviceId)
-        external
-        view
-        returns (bool useDefault, uint64 minCommitmentDuration, uint64 exitQueueDuration, bool forceExitAllowed);
-
-    function getNonPaymentTerminationPolicy(uint64 serviceId)
-        external
-        view
-        returns (bool useDefault, uint64 graceIntervals);
-
-    function onRequest(
-        uint64 requestId,
-        address requester,
-        address[] calldata operators,
-        bytes calldata requestInputs,
-        uint64 ttl,
-        address paymentAsset,
-        uint256 paymentAmount
-    ) external payable;
-
-    function onApprove(address operator, uint64 requestId, uint8 stakingPercent) external payable;
-    function onReject(address operator, uint64 requestId) external;
-
-    function onServiceInitialized(
-        uint64 blueprintId,
-        uint64 requestId,
-        uint64 serviceId,
-        address owner,
-        address[] calldata permittedCallers,
-        uint64 ttl
-    ) external;
-
-    function onServiceTermination(uint64 serviceId, address owner) external;
-    function canJoin(uint64 serviceId, address operator) external view returns (bool);
-    function onOperatorJoined(uint64 serviceId, address operator, uint16 exposureBps) external;
-    function canLeave(uint64 serviceId, address operator) external view returns (bool);
-    function onOperatorLeft(uint64 serviceId, address operator) external;
-    function onExitScheduled(uint64 serviceId, address operator, uint64 executeAfter) external;
-    function onExitCanceled(uint64 serviceId, address operator) external;
-    function onJobCall(uint64 serviceId, uint8 job, uint64 jobCallId, bytes calldata inputs) external payable;
-
-    function onJobResult(
-        uint64 serviceId,
-        uint8 job,
-        uint64 jobCallId,
-        address operator,
-        bytes calldata inputs,
-        bytes calldata outputs
-    ) external payable;
-
-    function onUnappliedSlash(uint64 serviceId, bytes calldata offender, uint8 slashPercent) external;
-    function onSlash(uint64 serviceId, bytes calldata offender, uint8 slashPercent) external;
-    function querySlashingOrigin(uint64 serviceId) external view returns (address);
-    function queryDisputeOrigin(uint64 serviceId) external view returns (address);
-    function queryDeveloperPaymentAddress(uint64 serviceId) external view returns (address payable);
-    function queryIsPaymentAssetAllowed(uint64 serviceId, address asset) external view returns (bool);
-    function getRequiredResultCount(uint64 serviceId, uint8 jobIndex) external view returns (uint32);
-    function requiresAggregation(uint64 serviceId, uint8 jobIndex) external view returns (bool);
-    function getAggregationThreshold(uint64 serviceId, uint8 jobIndex) external view returns (uint16, uint8);
-
-    function onAggregatedResult(
-        uint64 serviceId,
-        uint8 job,
-        uint64 jobCallId,
-        bytes calldata output,
-        uint256 signerBitmap,
-        uint256[2] calldata aggregatedSignature,
-        uint256[4] calldata aggregatedPubkey
-    ) external;
-
-    function getMinOperatorStake() external view returns (bool useDefault, uint256 minStake);
-    function forceRemoveAllowsBelowMin(uint64 serviceId) external view returns (bool ok);
-}
-
-/// @title InferenceBSM
-/// @notice Blueprint Service Manager for vLLM inference services.
-/// @dev Operators register with GPU capabilities. Services only accept tsUSD payment
-///      (the ShieldedCredits wrapped token) for anonymous billing.
-contract InferenceBSM is IBlueprintServiceManager {
+contract InferenceBSM is BlueprintServiceManagerBase {
     using EnumerableSet for EnumerableSet.AddressSet;
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // ERRORS
-    // ═══════════════════════════════════════════════════════════════════════
-
-    error OnlyTangleAllowed(address caller, address tangle);
-    error OnlyBlueprintOwnerAllowed(address caller, address owner);
-    error AlreadyInitialized();
     error InvalidPaymentAsset(address asset);
     error InsufficientGpuCapability(uint32 required, uint32 provided);
     error ModelNotSupported(string model);
     error OperatorNotRegistered(address operator);
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // EVENTS
-    // ═══════════════════════════════════════════════════════════════════════
-
     event OperatorRegistered(address indexed operator, string model, uint32 gpuCount, uint32 totalVramMib);
     event ModelConfigured(string model, uint32 maxContextLen, uint64 pricePerInputToken, uint64 pricePerOutputToken);
     event InferenceJobSubmitted(uint64 indexed serviceId, uint64 indexed jobCallId, uint32 maxTokens);
     event InferenceResultSubmitted(uint64 indexed serviceId, uint64 indexed jobCallId, uint32 totalTokens);
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // TYPES
-    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice GPU capabilities reported by operator at registration
     struct OperatorCapabilities {
@@ -144,14 +35,6 @@ contract InferenceBSM is IBlueprintServiceManager {
         bool enabled;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // STATE
-    // ═══════════════════════════════════════════════════════════════════════
-
-    address public tangleCore;
-    uint64 public blueprintId;
-    address public blueprintOwner;
-
     /// @notice The only accepted payment token (tsUSD — shielded pool wrapped token)
     address public immutable tsUSD;
 
@@ -167,43 +50,11 @@ contract InferenceBSM is IBlueprintServiceManager {
     /// @notice Set of registered operators
     EnumerableSet.AddressSet private _operators;
 
-    /// @notice Permitted payment assets per service
-    mapping(uint64 => EnumerableSet.AddressSet) private _permittedPaymentAssets;
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // MODIFIERS
-    // ═══════════════════════════════════════════════════════════════════════
-
-    modifier onlyFromTangle() {
-        _onlyFromTangle();
-        _;
-    }
-
-    modifier onlyBlueprintOwner() {
-        _onlyBlueprintOwner();
-        _;
-    }
-
-    function _onlyFromTangle() internal view {
-        if (msg.sender != tangleCore) revert OnlyTangleAllowed(msg.sender, tangleCore);
-    }
-
-    function _onlyBlueprintOwner() internal view {
-        if (msg.sender != blueprintOwner) revert OnlyBlueprintOwnerAllowed(msg.sender, blueprintOwner);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // CONSTRUCTOR
-    // ═══════════════════════════════════════════════════════════════════════
-
     /// @param _tsUSD The wrapped stablecoin accepted for payment
-    constructor(address _tsUSD) {
+    constructor(address _tsUSD, address registry) {
+        _initializeBlueprintManager(registry, msg.sender);
         tsUSD = _tsUSD;
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // ADMIN
-    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Configure a model's pricing and requirements
     function configureModel(
@@ -231,31 +82,11 @@ contract InferenceBSM is IBlueprintServiceManager {
         modelConfigs[key].enabled = false;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // BLUEPRINT LIFECYCLE
-    // ═══════════════════════════════════════════════════════════════════════
-
-    function onBlueprintCreated(uint64 _blueprintId, address owner, address _tangleCore) external {
-        if (tangleCore != address(0)) revert AlreadyInitialized();
-        blueprintId = _blueprintId;
-        blueprintOwner = owner;
-        tangleCore = _tangleCore;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // OPERATOR LIFECYCLE
-    // ═══════════════════════════════════════════════════════════════════════
-
     /// @notice Operator registers with GPU capabilities.
     /// @param registrationInputs abi.encode(string model, uint32 gpuCount, uint32 totalVramMib, string gpuModel, string endpoint)
-    function onRegister(address operator, bytes calldata registrationInputs) external payable onlyFromTangle {
-        (
-            string memory model,
-            uint32 gpuCount,
-            uint32 totalVramMib,
-            string memory gpuModel,
-            string memory endpoint
-        ) = abi.decode(registrationInputs, (string, uint32, uint32, string, string));
+    function onRegister(address operator, bytes calldata registrationInputs) external payable override onlyFromTangle {
+        (string memory model, uint32 gpuCount, uint32 totalVramMib, string memory gpuModel, string memory endpoint) =
+            abi.decode(registrationInputs, (string, uint32, uint32, string, string));
 
         // Validate model is configured
         bytes32 modelKey = keccak256(bytes(model));
@@ -281,83 +112,46 @@ contract InferenceBSM is IBlueprintServiceManager {
         emit OperatorRegistered(operator, model, gpuCount, totalVramMib);
     }
 
-    function onUnregister(address operator) external onlyFromTangle {
+    function onUnregister(address operator) external override onlyFromTangle {
         operatorCaps[operator].active = false;
         _operators.remove(operator);
     }
 
-    function onUpdatePreferences(address operator, bytes calldata newPreferences) external payable onlyFromTangle {
+    function onUpdatePreferences(address operator, bytes calldata newPreferences)
+        external
+        payable
+        override
+        onlyFromTangle
+    {
         // Allow updating endpoint
         string memory newEndpoint = abi.decode(newPreferences, (string));
         operatorCaps[operator].endpoint = newEndpoint;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // SERVICE LIFECYCLE
-    // ═══════════════════════════════════════════════════════════════════════
-
-    function onRequest(
-        uint64,
-        address,
-        address[] calldata,
-        bytes calldata,
-        uint64,
-        address paymentAsset,
-        uint256
-    ) external payable onlyFromTangle {
+    function onRequest(uint64, address, address[] calldata, bytes calldata, uint64, address paymentAsset, uint256)
+        external
+        payable
+        override
+        onlyFromTangle
+    {
         // Only accept tsUSD for payment (enables anonymous ShieldedCredits billing)
         if (paymentAsset != tsUSD && paymentAsset != address(0)) {
             revert InvalidPaymentAsset(paymentAsset);
         }
     }
 
-    function onApprove(address, uint64, uint8) external payable onlyFromTangle {}
-    function onReject(address, uint64) external onlyFromTangle {}
-
-    function onServiceInitialized(
-        uint64,
-        uint64,
-        uint64 serviceId,
-        address,
-        address[] calldata,
-        uint64
-    ) external onlyFromTangle {
-        // Restrict payment to tsUSD for this service
-        _permittedPaymentAssets[serviceId].add(tsUSD);
-    }
-
-    function onServiceTermination(uint64, address) external onlyFromTangle {}
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // DYNAMIC MEMBERSHIP
-    // ═══════════════════════════════════════════════════════════════════════
-
-    function canJoin(uint64, address operator) external view returns (bool) {
+    function canJoin(uint64, address operator) external view override returns (bool) {
         return operatorCaps[operator].active;
     }
 
-    function onOperatorJoined(uint64, address, uint16) external onlyFromTangle {}
-
-    function canLeave(uint64, address) external pure returns (bool) {
-        return true;
-    }
-
-    function onOperatorLeft(uint64, address) external onlyFromTangle {}
-    function onExitScheduled(uint64, address, uint64) external onlyFromTangle {}
-    function onExitCanceled(uint64, address) external onlyFromTangle {}
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // JOB LIFECYCLE
-    // ═══════════════════════════════════════════════════════════════════════
-
     /// @notice Validate an inference job submission
     /// @dev inputs = abi.encode(string prompt, uint32 maxTokens, uint64 temperature)
-    function onJobCall(
-        uint64 serviceId,
-        uint8,
-        uint64 jobCallId,
-        bytes calldata inputs
-    ) external payable onlyFromTangle {
+    function onJobCall(uint64 serviceId, uint8, uint64 jobCallId, bytes calldata inputs)
+        external
+        payable
+        override
+        onlyFromTangle
+    {
         (, uint32 maxTokens,) = abi.decode(inputs, (string, uint32, uint64));
 
         emit InferenceJobSubmitted(serviceId, jobCallId, maxTokens);
@@ -370,9 +164,9 @@ contract InferenceBSM is IBlueprintServiceManager {
         uint8,
         uint64 jobCallId,
         address operator,
-        bytes calldata,
+        bytes32,
         bytes calldata outputs
-    ) external payable onlyFromTangle {
+    ) external payable override onlyFromTangle {
         if (!operatorCaps[operator].active) revert OperatorNotRegistered(operator);
 
         (, uint32 promptTokens, uint32 completionTokens) = abi.decode(outputs, (string, uint32, uint32));
@@ -381,96 +175,26 @@ contract InferenceBSM is IBlueprintServiceManager {
         emit InferenceResultSubmitted(serviceId, jobCallId, totalTokens);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // SLASHING
-    // ═══════════════════════════════════════════════════════════════════════
-
-    function onUnappliedSlash(uint64, bytes calldata, uint8) external onlyFromTangle {}
-    function onSlash(uint64, bytes calldata, uint8) external onlyFromTangle {}
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // QUERIES
-    // ═══════════════════════════════════════════════════════════════════════
-
-    function querySlashingOrigin(uint64) external view returns (address) {
-        return address(this);
+    function queryIsPaymentAssetAllowed(uint64, address asset) external view override returns (bool) {
+        return asset == address(0) || asset == tsUSD;
     }
 
-    function queryDisputeOrigin(uint64) external view returns (address) {
-        return address(this);
-    }
-
-    function queryDeveloperPaymentAddress(uint64) external view returns (address payable) {
-        return payable(blueprintOwner);
-    }
-
-    function queryIsPaymentAssetAllowed(uint64 serviceId, address asset) external view returns (bool) {
-        if (asset == address(0)) return true;
-        if (_permittedPaymentAssets[serviceId].length() == 0) return asset == tsUSD;
-        return _permittedPaymentAssets[serviceId].contains(asset);
-    }
-
-    function getRequiredResultCount(uint64, uint8) external pure returns (uint32) {
-        return 1; // Single operator result is sufficient for inference
-    }
-
-    function requiresAggregation(uint64, uint8) external pure returns (bool) {
-        return false; // No BLS aggregation for inference
-    }
-
-    function getAggregationThreshold(uint64, uint8) external pure returns (uint16, uint8) {
+    function getAggregationThreshold(uint64, uint8) external pure override returns (uint16, uint8) {
         return (0, 0);
     }
 
-    function onAggregatedResult(uint64, uint8, uint64, bytes calldata, uint256, uint256[2] calldata, uint256[4] calldata)
-        external
-        onlyFromTangle
-    {}
-
-    function getMinOperatorStake() external pure returns (bool, uint256) {
+    function getMinOperatorStake() external pure override returns (bool, uint256) {
         return (false, MIN_OPERATOR_STAKE);
     }
 
-    function getHeartbeatInterval(uint64) external pure returns (bool, uint64) {
+    function getHeartbeatInterval(uint64) external pure override returns (bool, uint64) {
         return (false, 100); // ~100 blocks heartbeat for liveness
     }
 
-    function getHeartbeatThreshold(uint64) external pure returns (bool, uint8) {
-        return (true, 0);
-    }
-
-    function getSlashingWindow(uint64) external pure returns (bool, uint64) {
-        return (true, 0);
-    }
-
-    function getExitConfig(uint64) external pure returns (bool, uint64, uint64, bool) {
+    function getExitConfig(uint64) external pure override returns (bool, uint64, uint64, bool) {
         // 1 hour min commitment, 1 hour exit queue, force exit allowed
         return (false, 3600, 3600, true);
     }
-
-    function getNonPaymentTerminationPolicy(uint64) external pure returns (bool, uint64) {
-        return (true, 0);
-    }
-
-    /// @notice Whether `forceRemoveOperator` may drop the service below `minOperators`.
-    /// @dev Returns false to enforce the protocol-level floor on emergency eviction.
-    ///      Override only if this blueprint genuinely needs below-min eviction.
-    ///
-    ///      Added in tnt-core v0.13.0 (PR #125): the protocol now consults this hook
-    ///      from `forceRemoveOperator` so custom BSMs can opt-in to bypassing the
-    ///      `minOperators` floor on emergency eviction. The default in
-    ///      `BlueprintServiceManagerBase` is `false`, which preserves the historical
-    ///      invariant that a service cannot be eviscerated below its minimum operator
-    ///      count even via the force path. Because this BSM declares
-    ///      `IBlueprintServiceManager` inline rather than inheriting the base, we must
-    ///      provide the implementation explicitly.
-    function forceRemoveAllowsBelowMin(uint64) external pure returns (bool) {
-        return false;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // VIEW HELPERS
-    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Get all registered operators
     function getOperators() external view returns (address[] memory) {
@@ -509,5 +233,5 @@ contract InferenceBSM is IBlueprintServiceManager {
         return (mc.pricePerInputToken, mc.pricePerOutputToken, caps.endpoint);
     }
 
-    receive() external payable {}
+    receive() external payable override {}
 }

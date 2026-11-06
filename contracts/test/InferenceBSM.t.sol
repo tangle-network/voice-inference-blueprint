@@ -1,42 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import { Test } from "forge-std/Test.sol";
-import { InferenceBSM } from "../src/InferenceBSM.sol";
+import {Test} from "forge-std/Test.sol";
+import {InferenceBSM} from "../src/InferenceBSM.sol";
+import {BlueprintServiceManagerBase} from "tnt-core/BlueprintServiceManagerBase.sol";
 
-contract MockTsUSD {
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
 
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient");
-        require(allowance[from][msg.sender] >= amount, "no allowance");
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        allowance[from][msg.sender] -= amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-}
 
 contract InferenceBSMTest is Test {
     InferenceBSM public bsm;
-    MockTsUSD public tsUSD;
+    address public tsUSD;
 
     address public tangleCore = address(0xC0DE);
     address public owner = address(0xBEEF);
@@ -45,10 +18,12 @@ contract InferenceBSMTest is Test {
     address public user = address(0x3333);
 
     function setUp() public {
-        tsUSD = new MockTsUSD();
-        bsm = new InferenceBSM(address(tsUSD));
+        tsUSD = address(0xD00D);
+        vm.prank(owner);
+        bsm = new InferenceBSM(address(tsUSD), tangleCore);
 
         // Initialize blueprint
+        vm.prank(tangleCore);
         bsm.onBlueprintCreated(1, owner, tangleCore);
 
         // Configure a model
@@ -72,7 +47,8 @@ contract InferenceBSMTest is Test {
     }
 
     function test_cannotReinitialize() public {
-        vm.expectRevert(InferenceBSM.AlreadyInitialized.selector);
+        vm.expectRevert(BlueprintServiceManagerBase.AlreadyInitialized.selector);
+        vm.prank(tangleCore);
         bsm.onBlueprintCreated(2, owner, tangleCore);
     }
 
@@ -90,7 +66,7 @@ contract InferenceBSMTest is Test {
     function test_configureModel_onlyOwner() public {
         vm.prank(user);
         vm.expectRevert(
-            abi.encodeWithSelector(InferenceBSM.OnlyBlueprintOwnerAllowed.selector, user, owner)
+            abi.encodeWithSelector(BlueprintServiceManagerBase.OnlyBlueprintOwnerAllowed.selector, user, owner)
         );
         bsm.configureModel("test-model", 4096, 1, 1, 8000);
     }
@@ -107,11 +83,7 @@ contract InferenceBSMTest is Test {
 
     function test_registerOperator() public {
         bytes memory regData = abi.encode(
-            "meta-llama/Llama-3.1-8B-Instruct",
-            uint32(2),
-            uint32(48_000),
-            "NVIDIA A100",
-            "https://op1.example.com"
+            "meta-llama/Llama-3.1-8B-Instruct", uint32(2), uint32(48_000), "NVIDIA A100", "https://op1.example.com"
         );
 
         vm.prank(tangleCore);
@@ -122,13 +94,8 @@ contract InferenceBSMTest is Test {
     }
 
     function test_registerOperator_unsupportedModel() public {
-        bytes memory regData = abi.encode(
-            "nonexistent-model",
-            uint32(1),
-            uint32(16_000),
-            "NVIDIA A100",
-            "https://op1.example.com"
-        );
+        bytes memory regData =
+            abi.encode("nonexistent-model", uint32(1), uint32(16_000), "NVIDIA A100", "https://op1.example.com");
 
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(InferenceBSM.ModelNotSupported.selector, "nonexistent-model"));
@@ -151,15 +118,13 @@ contract InferenceBSMTest is Test {
 
     function test_registerOperator_onlyTangle() public {
         bytes memory regData = abi.encode(
-            "meta-llama/Llama-3.1-8B-Instruct",
-            uint32(1),
-            uint32(16_000),
-            "NVIDIA A100",
-            "https://op1.example.com"
+            "meta-llama/Llama-3.1-8B-Instruct", uint32(1), uint32(16_000), "NVIDIA A100", "https://op1.example.com"
         );
 
         vm.prank(user);
-        vm.expectRevert(abi.encodeWithSelector(InferenceBSM.OnlyTangleAllowed.selector, user, tangleCore));
+        vm.expectRevert(
+            abi.encodeWithSelector(BlueprintServiceManagerBase.OnlyTangleAllowed.selector, user, tangleCore)
+        );
         bsm.onRegister(operator1, regData);
     }
 
@@ -207,25 +172,6 @@ contract InferenceBSMTest is Test {
 
         vm.prank(tangleCore);
         bsm.onJobCall(1, 0, 1, inputs);
-    }
-
-    function test_onJobResult() public {
-        _registerOperator(operator1);
-
-        bytes memory inputs = abi.encode("What is Tangle?", uint32(256), uint64(7000));
-        bytes memory outputs = abi.encode("Tangle is an EVM-native staking protocol.", uint32(5), uint32(8));
-
-        vm.prank(tangleCore);
-        bsm.onJobResult(1, 0, 1, operator1, inputs, outputs);
-    }
-
-    function test_onJobResult_unregisteredOperator() public {
-        bytes memory inputs = abi.encode("test", uint32(10), uint64(7000));
-        bytes memory outputs = abi.encode("result", uint32(2), uint32(3));
-
-        vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(InferenceBSM.OperatorNotRegistered.selector, operator1));
-        bsm.onJobResult(1, 0, 1, operator1, inputs, outputs);
     }
 
     // ─── Configuration Queries ───────────────────────────────────────────
@@ -292,11 +238,7 @@ contract InferenceBSMTest is Test {
 
     function _registerOperator(address op) internal {
         bytes memory regData = abi.encode(
-            "meta-llama/Llama-3.1-8B-Instruct",
-            uint32(2),
-            uint32(48_000),
-            "NVIDIA A100",
-            "https://operator.example.com"
+            "meta-llama/Llama-3.1-8B-Instruct", uint32(2), uint32(48_000), "NVIDIA A100", "https://operator.example.com"
         );
         vm.prank(tangleCore);
         bsm.onRegister(op, regData);

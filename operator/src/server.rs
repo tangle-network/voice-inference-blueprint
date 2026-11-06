@@ -8,9 +8,7 @@
 //! * Request/response types for the OpenAI TTS wire format.
 //! * HTTP handlers that glue the shared billing flow to the vLLM-Omni subprocess.
 
-use blueprint_sdk::std::collections::HashMap;
-use blueprint_sdk::std::sync::Arc;
-use blueprint_sdk::std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
@@ -36,21 +34,21 @@ use tangle_inference_core::{
 };
 
 use crate::config::OperatorConfig;
+use crate::speech::SpeechClient;
 use crate::stt_engine::SttEngine;
-use crate::voice_engine::VoiceEngine;
 
 /// Backend attached to `AppState` via `AppStateBuilder::backend`. Handlers
 /// retrieve it via `state.backend::<VoiceBackend>().unwrap()`.
 pub struct VoiceBackend {
     pub config: Arc<OperatorConfig>,
-    pub engine: Arc<VoiceEngine>,
+    pub engine: Arc<SpeechClient>,
     pub cost_model: PerCharCostModel,
     pub stt_engine: Option<Arc<SttEngine>>,
     pub stt_cost_model: Option<PerSecondCostModel>,
 }
 
 impl VoiceBackend {
-    pub fn new(config: Arc<OperatorConfig>, engine: Arc<VoiceEngine>) -> Self {
+    pub fn new(config: Arc<OperatorConfig>, engine: Arc<SpeechClient>) -> Self {
         let cost_model = PerCharCostModel {
             price_per_1k_chars: config.vllm.price_per_1k_chars,
         };
@@ -231,7 +229,7 @@ async fn speech_handler(
         None
     };
 
-    // 5. Cost sanity check, per-account concurrency, pre-auth, nonce insert.
+    // 5. Cost sanity check, per-account concurrency, pre-auth.
     if let (Some(ref spend_auth), Some(preauth)) = (&req.spend_auth, preauth_amount) {
         let character_count = req.input.len() as u32;
         let estimated_max_cost = backend.calculate_cost(character_count);
@@ -286,17 +284,6 @@ async fn speech_handler(
                 "authorization_failed",
             );
         }
-
-        // Record the nonce as used AFTER successful on-chain authorization
-        let nonce_key = (spend_auth.commitment.clone(), spend_auth.nonce);
-        state
-            .nonce_store
-            .insert(
-                nonce_key,
-                spend_auth.expiry,
-                state.billing_config.clock_skew_tolerance_secs,
-            )
-            .await;
     }
 
     // 6. Send TTS request to voice engine
@@ -323,7 +310,8 @@ async fn speech_handler(
     // 7. Post-response settlement
     if let (Some(ref spend_auth), Some(preauth)) = (&req.spend_auth, preauth_amount) {
         let actual_cost = backend.calculate_cost(character_count);
-        if let Err(e) = settle_billing(&state.billing, spend_auth, preauth, actual_cost).await {
+        if let Err(e) = settle_billing(&state.billing, spend_auth, preauth, Some(actual_cost)).await
+        {
             tracing::error!(error = %e, "on-chain settlement failed — manual recovery required");
         }
     }
@@ -483,8 +471,13 @@ async fn transcription_handler(
             extra: HashMap::from([("centiseconds".into(), actual_centiseconds)]),
             ..Default::default()
         });
-        if let Err(e) =
-            settle_billing(&state.billing, auth, preauth.unwrap_or(0), actual_cost).await
+        if let Err(e) = settle_billing(
+            &state.billing,
+            auth,
+            preauth.unwrap_or(0),
+            Some(actual_cost),
+        )
+        .await
         {
             tracing::error!(error = %e, "STT settlement failed");
         }

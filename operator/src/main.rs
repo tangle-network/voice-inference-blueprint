@@ -1,83 +1,26 @@
-use blueprint_sdk::std::sync::Arc;
-
-use blueprint_sdk::contexts::tangle::TangleClientContext;
-use blueprint_sdk::runner::config::BlueprintEnvironment;
-use blueprint_sdk::runner::tangle::config::TangleConfig;
-use blueprint_sdk::runner::BlueprintRunner;
-use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
-
+use alloy_sol_types::SolValue;
 use voice_inference::config::OperatorConfig;
-use voice_inference::detect_gpus;
 use voice_inference::VoiceInferenceServer;
 
-fn setup_log() {
-    use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::from_default_env();
-    fmt().with_env_filter(filter).init();
+fn registration_payload(config: &OperatorConfig) -> Vec<u8> {
+    (
+        config.vllm.model.clone(),
+        config.gpu.expected_gpu_count,
+        config.gpu.min_vram_mib,
+        config
+            .gpu
+            .gpu_model
+            .clone()
+            .unwrap_or_else(|| "unknown".into()),
+        format!("http://{}:{}", config.server.host, config.server.port),
+    )
+        .abi_encode()
 }
 
-#[tokio::main]
-#[allow(clippy::result_large_err)]
-async fn main() -> Result<(), blueprint_sdk::Error> {
-    setup_log();
-
-    // Check GPU availability (non-fatal)
-    match detect_gpus().await {
-        Ok(gpus) => {
-            tracing::info!(count = gpus.len(), "detected GPUs");
-            for gpu in &gpus {
-                tracing::info!(
-                    name = %gpu.name,
-                    vram_mib = gpu.memory_total_mib,
-                    "GPU"
-                );
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "GPU detection failed — running in CPU mode");
-        }
-    }
-
-    // Load operator config
-    let config = OperatorConfig::load(None)
-        .map_err(|e| blueprint_sdk::Error::Other(format!("config load failed: {e}")))?;
-    let config = Arc::new(config);
-
-    // Load blueprint environment
-    let env = BlueprintEnvironment::load()?;
-
-    // Get Tangle client
-    let tangle_client = env
-        .tangle_client()
-        .await
-        .map_err(|e| blueprint_sdk::Error::Other(e.to_string()))?;
-
-    // Get service ID
-    let service_id = env
-        .protocol_settings
-        .tangle()
-        .map_err(|e| blueprint_sdk::Error::Other(e.to_string()))?
-        .service_id
-        .ok_or_else(|| blueprint_sdk::Error::Other("No service ID configured".to_string()))?;
-
-    // Producer: polls for JobSubmitted events
-    let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
-
-    // Consumer: submits results via submitResult
-    let tangle_consumer = TangleConsumer::new(tangle_client.clone());
-
-    // Background service: vLLM subprocess + HTTP server
-    let voice_server = VoiceInferenceServer {
-        config: config.clone(),
-    };
-
-    BlueprintRunner::builder(TangleConfig::default(), env)
-        .router(voice_inference::router())
-        .producer(tangle_producer)
-        .consumer(tangle_consumer)
-        .background_service(voice_server)
-        .run()
-        .await?;
-
-    Ok(())
-}
+tangle_inference_core::run_operator!(
+    OperatorConfig::load(None),
+    registration_payload,
+    |_| voice_inference::router(),
+    |config| VoiceInferenceServer { config },
+    no_qos
+);

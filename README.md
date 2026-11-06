@@ -17,14 +17,14 @@ A Tangle Blueprint enabling operators to serve TTS (Text-to-Speech) inference vi
 - **On-chain jobs** via TangleProducer — verifiable results on Tangle
 - **x402 HTTP** — fast private TTS at `/v1/audio/speech`
 
-Single model per instance. Built with [Blueprint SDK](https://github.com/tangle-network/blueprint) `0.1.0-alpha.22`.
+Single model per instance. Dependencies are pinned in [Cargo.toml](Cargo.toml).
 
 ## Components
 
 | Component | Language | Description |
 |-----------|----------|-------------|
 | `operator/` | Rust | Operator binary — vLLM subprocess, HTTP server, SpendAuth billing |
-| `contracts/` | Solidity | InferenceBSM — GPU validation, model pricing (24 tests) |
+| `contracts/` | Solidity | InferenceBSM — GPU validation, model pricing |
 | `sdk/` | TypeScript | Client SDK — OpenAI-compatible TTS interface with spend auth signing |
 
 ## Related Repos
@@ -36,3 +36,18 @@ Single model per instance. Built with [Blueprint SDK](https://github.com/tangle-
 ## License
 
 MIT
+
+## Register a blueprint
+
+Deploy the manager with [Deploy.s.sol](contracts/script/Deploy.s.sol), `TANGLE_CORE` and `TSUSD_ADDRESS`
+and a Foundry keystore. Set its returned manager address in
+[definition.json](deploy/definition.json), then follow the
+[cargo-tangle deployment guide](https://github.com/tangle-network/blueprint#deploying-to-testnetmainnet)
+using the same wallet address in the SDK keystore. Use verified native artifact
+metadata from [Release](.github/workflows/release.yml). The CLI owns registration
+encoding and metadata hashing; `cargo tangle blueprint deploy tangle --help`
+lists its settings, RPC and artifact options.
+
+## Releases
+
+[Release](.github/workflows/release.yml) runs cargo-dist using [dist-workspace.toml](dist-workspace.toml). Download the native archive and verify its published checksum; `dist-manifest.json` identifies its executables and target platform.

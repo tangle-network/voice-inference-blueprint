@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@tangle-network/tcloud@1.0.4'

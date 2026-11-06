@@ -20,46 +20,7 @@ export interface ModelList {
   data: ModelInfo[]
 }
 
-/** Operator info from the BSM contract */
-export interface OperatorInfo {
-  address: string
-  model: string
-  gpuCount: number
-  totalVramMib: number
-  gpuModel: string
-  endpoint: string
-  active: boolean
-}
-
-/** Model pricing config from the BSM contract */
-export interface ModelConfig {
-  maxContextLen: number
-  pricePer1kCharacters: bigint
-  minGpuVramMib: number
-  enabled: boolean
-}
-
-/** ShieldedCredits spend authorization */
-export interface SpendAuth {
-  commitment: string
-  serviceId: bigint
-  jobIndex: number
-  amount: bigint
-  operator: string
-  nonce: bigint
-  expiry: bigint
-  signature: string
-}
-
-/** Credit account state */
-export interface CreditAccount {
-  spendingKey: string
-  token: string
-  balance: bigint
-  totalFunded: bigint
-  totalSpent: bigint
-  nonce: bigint
-}
+export type { SpendAuth } from "@tangle-network/tcloud/shielded";
 
 /** Client configuration */
 export interface VoiceClientConfig {
