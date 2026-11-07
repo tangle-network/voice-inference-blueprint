@@ -202,40 +202,34 @@ async fn build_test_state(config: Arc<OperatorConfig>) -> voice_inference::AppSt
 async fn start_test_server(
     vllm_port: u16,
 ) -> (u16, tokio::sync::watch::Sender<bool>, JoinHandle<()>) {
-    let server_port = free_port();
-    let mut config = test_config(vllm_port);
-    config.server.port = server_port;
-    config.server.host = "127.0.0.1".into();
-    let config = Arc::new(config);
-
-    let state = build_test_state(config).await;
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    let handle = voice_inference::server::start(state, shutdown_rx)
-        .await
-        .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    (server_port, shutdown_tx, handle)
+    start_server(vllm_port, false).await
 }
 
 async fn start_billing_required_server(
     vllm_port: u16,
 ) -> (u16, tokio::sync::watch::Sender<bool>, JoinHandle<()>) {
-    let server_port = free_port();
-    let mut config = test_config(vllm_port);
-    config.server.port = server_port;
-    config.server.host = "127.0.0.1".into();
-    config.billing.billing_required = true;
-    let config = Arc::new(config);
+    start_server(vllm_port, true).await
+}
 
-    let state = build_test_state(config).await;
+/// `free_port` releases the port before the server binds, so a parallel test can take it.
+async fn start_server(
+    vllm_port: u16,
+    billing_required: bool,
+) -> (u16, tokio::sync::watch::Sender<bool>, JoinHandle<()>) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    let handle = voice_inference::server::start(state, shutdown_rx)
-        .await
-        .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    (server_port, shutdown_tx, handle)
+    for _ in 0..5 {
+        let mut config = test_config(vllm_port);
+        config.server.port = free_port();
+        config.server.host = "127.0.0.1".into();
+        config.billing.billing_required = billing_required;
+        let server_port = config.server.port;
+        let state = build_test_state(Arc::new(config)).await;
+        if let Ok(handle) = voice_inference::server::start(state, shutdown_rx.clone()).await {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            return (server_port, shutdown_tx, handle);
+        }
+    }
+    panic!("test server found no free port in 5 attempts");
 }
 
 #[tokio::test]

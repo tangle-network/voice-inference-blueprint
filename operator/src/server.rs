@@ -90,13 +90,12 @@ pub async fn start(
     state: AppState,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<JoinHandle<()>> {
-    let backend = state
+    state
         .backend::<VoiceBackend>()
         .ok_or_else(|| anyhow::anyhow!("AppState backend is not a VoiceBackend"))?;
     let max_request_body_bytes = state.server_config.max_request_body_bytes;
     let request_timeout_secs = state.server_config.stream_timeout_secs;
     let bind = format!("{}:{}", state.server_config.host, state.server_config.port);
-    let _ = backend; // validated before spawning
 
     let app = HttpRouter::new()
         .route("/v1/audio/speech", post(speech_handler))
@@ -111,7 +110,7 @@ pub async fn start(
         .layer(TimeoutLayer::new(Duration::from_secs(request_timeout_secs)))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(bind = %bind, "HTTP server listening");
@@ -127,6 +126,7 @@ pub async fn start(
         {
             tracing::error!(error = %e, "HTTP server error");
         }
+        let _ = tokio::time::timeout(Duration::from_secs(60), state.drain_settlements()).await;
     });
 
     Ok(handle)
