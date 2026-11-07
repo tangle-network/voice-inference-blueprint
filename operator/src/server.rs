@@ -26,7 +26,8 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use tangle_inference_core::server::{
-    error_response, extract_x402_spend_auth, payment_required, settle_billing, validate_spend_auth,
+    authorize_request, error_response, payment_required, resolve_payment_proof, settle_request,
+    AuthorizedPayment,
 };
 use tangle_inference_core::{
     detect_gpus, AppState, CostModel, CostParams, GpuInfo, PerCharCostModel, PerSecondCostModel,
@@ -172,6 +173,25 @@ fn content_type_for_format(format: &str) -> &'static str {
 
 // --- Handlers ---
 
+/// Authorize the request's payment; `None` serves it unpaid when billing is optional.
+async fn authorize(
+    state: &AppState,
+    headers: &HeaderMap,
+    body_spend_auth: Option<SpendAuthPayload>,
+    (quote, estimated): (u64, u64),
+    healthy: impl std::future::Future<Output = bool> + Send,
+) -> Result<Option<AuthorizedPayment>, Response> {
+    let Some(proof) = resolve_payment_proof(headers, body_spend_auth, None) else {
+        let (b, t) = (&state.billing_config, &state.tangle_config);
+        if b.billing_required {
+            return Err(payment_required(b, t, state.operator_address, quote));
+        }
+        return Ok(None);
+    };
+    let authorized = authorize_request(state, proof, estimated, healthy).await?;
+    Ok(Some(authorized))
+}
+
 fn backend_from(state: &AppState) -> &VoiceBackend {
     state
         .backend::<VoiceBackend>()
@@ -200,94 +220,20 @@ async fn speech_handler(
         }
     };
 
-    // 2. x402 flow: if no spend_auth in body, check X-Payment-Signature header
-    if req.spend_auth.is_none() {
-        if let Some(x402_auth) = extract_x402_spend_auth(&headers) {
-            req.spend_auth = Some(x402_auth);
-        }
-    }
-
-    // 3. Enforce billing requirement — return 402 Payment Required if missing
-    if state.billing_config.billing_required && req.spend_auth.is_none() {
-        // Estimate for a typical 1000-character request
-        let estimated = backend.calculate_cost(1000);
-        return payment_required(
-            &state.billing_config,
-            &state.tangle_config,
-            state.operator_address,
-            estimated,
-        );
-    }
-
-    // 4. Validate SpendAuth (signature, account info, nonce replay, etc).
-    let preauth_amount: Option<u64> = if let Some(ref spend_auth) = req.spend_auth {
-        match validate_spend_auth(&state, spend_auth).await {
-            Ok(amt) => Some(amt),
-            Err(resp) => return resp,
-        }
-    } else {
-        None
+    // 2. Resolve the payment, then authorize it once the engine is healthy.
+    // A 402 quotes a typical 1000-character request.
+    let character_count = req.input.len() as u32;
+    let costs = (
+        backend.calculate_cost(1000),
+        backend.calculate_cost(character_count),
+    );
+    let (spend_auth, healthy) = (req.spend_auth.take(), backend.engine.is_healthy());
+    let authorized = match authorize(&state, &headers, spend_auth, costs, healthy).await {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
 
-    // 5. Cost sanity check, per-account concurrency, pre-auth.
-    if let (Some(ref spend_auth), Some(preauth)) = (&req.spend_auth, preauth_amount) {
-        let character_count = req.input.len() as u32;
-        let estimated_max_cost = backend.calculate_cost(character_count);
-        let preauth_ceiling = estimated_max_cost.saturating_mul(3) / 2;
-        if estimated_max_cost > 0 && preauth > preauth_ceiling {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "pre-auth amount ({preauth}) exceeds 1.5x estimated max cost ({estimated_max_cost}) — \
-                     contract settles full pre-auth, reduce amount to avoid overcharging"
-                ),
-                "billing_error",
-                "excessive_preauth",
-            );
-        }
-
-        // 5a. Per-account concurrency limit.
-        let max_per_account = state.server_config.max_per_account_requests;
-        if max_per_account > 0 {
-            let mut map = state
-                .active_per_account
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let count = map.entry(spend_auth.commitment.clone()).or_insert(0);
-            if *count >= max_per_account {
-                return error_response(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    format!("account has {count} active requests (limit: {max_per_account})"),
-                    "rate_limit_error",
-                    "per_account_limit",
-                );
-            }
-            *count += 1;
-        }
-
-        // 5b. Check engine health before committing gas.
-        if !backend.engine.is_healthy().await {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "inference backend is unavailable — billing not initiated".to_string(),
-                "upstream_error",
-                "engine_unhealthy",
-            );
-        }
-
-        if let Err(e) = state.billing.authorize_spend(spend_auth).await {
-            tracing::error!(error = %e, "authorizeSpend failed");
-            return error_response(
-                StatusCode::PAYMENT_REQUIRED,
-                format!("billing authorization failed: {e}"),
-                "billing_error",
-                "authorization_failed",
-            );
-        }
-    }
-
-    // 6. Send TTS request to voice engine
-    let character_count = req.input.len() as u32;
+    // 3. Send TTS request to voice engine
     let response_format = req.response_format.as_deref().unwrap_or("mp3").to_string();
 
     let audio_bytes = match backend.engine.speech_synthesis(&req).await {
@@ -307,16 +253,13 @@ async fn speech_handler(
     metrics_guard.set_tokens(character_count, 0);
     metrics_guard.set_success();
 
-    // 7. Post-response settlement
-    if let (Some(ref spend_auth), Some(preauth)) = (&req.spend_auth, preauth_amount) {
+    // 4. Post-response settlement
+    if let Some(auth) = &authorized {
         let actual_cost = backend.calculate_cost(character_count);
-        if let Err(e) = settle_billing(&state.billing, spend_auth, preauth, Some(actual_cost)).await
-        {
-            tracing::error!(error = %e, "on-chain settlement failed — manual recovery required");
-        }
+        settle_request(&state, auth, Some(actual_cost)).await;
     }
 
-    // 8. Return audio bytes with appropriate Content-Type
+    // 5. Return audio bytes with appropriate Content-Type
     let content_type = content_type_for_format(&response_format);
     Response::builder()
         .status(StatusCode::OK)
@@ -422,27 +365,13 @@ async fn transcription_handler(
         ..Default::default()
     });
 
-    // Inline billing gate: extract x402, enforce billing, validate spend_auth
-    let spend_auth_from_header = extract_x402_spend_auth(&headers);
-
-    if state.billing_config.billing_required && spend_auth_from_header.is_none() {
-        return payment_required(
-            &state.billing_config,
-            &state.tangle_config,
-            state.operator_address,
-            estimated_cost,
-        );
-    }
-
-    let (spend_auth, preauth): (Option<SpendAuthPayload>, Option<u64>) =
-        if let Some(ref sa) = spend_auth_from_header {
-            match validate_spend_auth(&state, sa).await {
-                Ok(amt) => (spend_auth_from_header, Some(amt)),
-                Err(resp) => return resp,
-            }
-        } else {
-            (None, None)
-        };
+    // STT has no health probe; the request itself reports a failed backend.
+    let costs = (estimated_cost, estimated_cost);
+    let healthy = std::future::ready(true);
+    let authorized = match authorize(&state, &headers, None, costs, healthy).await {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
 
     let stt_backend_name = backend
         .config
@@ -465,22 +394,13 @@ async fn transcription_handler(
     };
 
     // Settle based on actual audio duration
-    if let Some(ref auth) = spend_auth {
+    if let Some(auth) = &authorized {
         let actual_centiseconds = (result.duration * 100.0) as u64;
         let actual_cost = stt_cost_model.calculate_cost(&CostParams {
             extra: HashMap::from([("centiseconds".into(), actual_centiseconds)]),
             ..Default::default()
         });
-        if let Err(e) = settle_billing(
-            &state.billing,
-            auth,
-            preauth.unwrap_or(0),
-            Some(actual_cost),
-        )
-        .await
-        {
-            tracing::error!(error = %e, "STT settlement failed");
-        }
+        settle_request(&state, auth, Some(actual_cost)).await;
     }
 
     guard.set_success();
