@@ -6,7 +6,7 @@ pub mod whisper;
 
 // Re-export shared infrastructure so downstream crates can `use voice_inference::*`.
 pub use tangle_inference_core::server::{
-    error_response, extract_x402_spend_auth, payment_required, settle_billing, validate_spend_auth,
+    error_response, extract_x402_spend_auth, payment_required, validate_spend_auth,
 };
 pub use tangle_inference_core::{
     detect_gpus, parse_nvidia_smi_output, AppState, AppStateBuilder, BillingClient, CostModel,
