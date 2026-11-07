@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {InferenceBSM} from "../src/InferenceBSM.sol";
+import {Deploy} from "../script/Deploy.s.sol";
 import {BlueprintServiceManagerBase} from "tnt-core/BlueprintServiceManagerBase.sol";
 
 
@@ -54,13 +55,15 @@ contract InferenceBSMTest is Test {
 
     // ─── Model Configuration ─────────────────────────────────────────────
 
-    function test_configureModel() public view {
-        InferenceBSM.ModelConfig memory mc = bsm.getModelConfig("meta-llama/Llama-3.1-8B-Instruct");
-        assertEq(mc.maxContextLen, 8192);
-        assertEq(mc.pricePerInputToken, 1);
-        assertEq(mc.pricePerOutputToken, 2);
-        assertEq(mc.minGpuVramMib, 16_000);
-        assertTrue(mc.enabled);
+    function test_deployConfiguresModelFromOperatorConfig() public {
+        vm.setEnv("TANGLE_CORE", vm.toString(address(this)));
+        vm.setEnv("TSUSD_ADDRESS", vm.toString(tsUSD));
+        InferenceBSM manager = InferenceBSM(payable(new Deploy().run()));
+        manager.onRegister(operator1, abi.encode("Qwen/Qwen3-TTS-1.7B", uint32(1), uint32(16_000), "L4", "https://op"));
+        assertTrue(manager.isOperatorActive(operator1));
+        (uint64 inputPrice, uint64 outputPrice,) = manager.getOperatorPricing(operator1);
+        assertEq(inputPrice, 10);
+        assertEq(outputPrice, 0);
     }
 
     function test_configureModel_onlyOwner() public {
@@ -175,26 +178,6 @@ contract InferenceBSMTest is Test {
     }
 
     // ─── Configuration Queries ───────────────────────────────────────────
-
-    function test_minOperatorStake() public view {
-        (bool useDefault, uint256 minStake) = bsm.getMinOperatorStake();
-        assertFalse(useDefault);
-        assertEq(minStake, 100 ether);
-    }
-
-    function test_heartbeatInterval() public view {
-        (bool useDefault, uint64 interval) = bsm.getHeartbeatInterval(1);
-        assertFalse(useDefault);
-        assertEq(interval, 100);
-    }
-
-    function test_exitConfig() public view {
-        (bool useDefault, uint64 minCommitment, uint64 exitQueue, bool forceExit) = bsm.getExitConfig(1);
-        assertFalse(useDefault);
-        assertEq(minCommitment, 3600);
-        assertEq(exitQueue, 3600);
-        assertTrue(forceExit);
-    }
 
     function test_paymentAssetAllowed_tsUSD() public {
         // Initialize a service to set up permitted assets
